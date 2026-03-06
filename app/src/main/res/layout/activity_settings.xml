@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="32dp"
+    android:background="#121212"
+    android:gravity="center_horizontal"
+    android:fitsSystemWindows="true">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="设置直播源地址"
+        android:textColor="#FFFFFF"
+        android:textSize="24sp"
+        android:layout_marginBottom="24dp" />
+
+    <EditText
+        android:id="@+id/edit_source_url"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="输入 .m3u 或 .txt 链接"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#88FFFFFF"
+        android:backgroundTint="#FFFFFF"
+        android:layout_marginBottom="24dp"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:inputType="textUri" />
+
+    <Button
+        android:id="@+id/btn_save"
+        android:layout_width="200dp"
+        android:layout_height="wrap_content"
+        android:text="保存并刷新"
+        android:backgroundTint="#2196F3"
+        android:textColor="#FFFFFF"
+        android:focusable="true" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="* 多个视频地址格式建议：\n1. TXT: 频道名,URL\n2. M3U: #EXTM3U 标准格式"
+        android:textColor="#88FFFFFF"
+        android:layout_marginTop="32dp"
+        android:gravity="center" />
+
+</LinearLayout>
