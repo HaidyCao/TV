@@ -38,6 +38,7 @@ import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
 
 import androidx.lifecycle.lifecycleScope
+import androidx.fragment.app.Fragment
 import kotlinx.coroutines.launch
 
 /**
@@ -45,7 +46,7 @@ import kotlinx.coroutines.launch
  */
 class MainFragment : BrowseSupportFragment() {
 
-    private val mHandler = Handler(Looper.myLooper()!!)
+    private val mHandler = Handler(Looper.getMainLooper())
     private lateinit var mBackgroundManager: BackgroundManager
     private var mDefaultBackground: Drawable? = null
     private lateinit var mMetrics: DisplayMetrics
@@ -135,7 +136,12 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun setupEventListeners() {
         setOnSearchClickedListener {
-            Toast.makeText(requireActivity(), "Implement your own in-app search", Toast.LENGTH_LONG).show()
+            // 启动搜索界面
+            val searchFragment = SearchFragment()
+            requireActivity().supportFragmentManager.beginTransaction()
+                .replace(R.id.main_browse_fragment, searchFragment)
+                .addToBackStack(null)
+                .commit()
         }
 
         onItemViewClickedListener = ItemViewClickedListener()
@@ -221,13 +227,11 @@ class MainFragment : BrowseSupportFragment() {
     private fun startBackgroundTimer() {
         mBackgroundTimer?.cancel()
         mBackgroundTimer = Timer()
-        mBackgroundTimer?.schedule(UpdateBackgroundTask(), BACKGROUND_UPDATE_DELAY.toLong())
-    }
-
-    private inner class UpdateBackgroundTask : TimerTask() {
-        override fun run() {
-            mHandler.post { updateBackground(mBackgroundUri) }
-        }
+        mBackgroundTimer?.schedule(object : TimerTask() {
+            override fun run() {
+                mHandler.post { updateBackground(mBackgroundUri) }
+            }
+        }, BACKGROUND_UPDATE_DELAY.toLong())
     }
 
     private inner class GridItemPresenter : Presenter() {

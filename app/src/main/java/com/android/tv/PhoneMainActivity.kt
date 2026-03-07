@@ -16,28 +16,57 @@ class PhoneMainActivity : AppCompatActivity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: PhoneChannelAdapter
     private lateinit var swipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+    private lateinit var toolbar: androidx.appcompat.widget.Toolbar
+    private lateinit var gridLayoutManager: GridLayoutManager
+
+    private val allChannels = mutableListOf<Movie>()
+    private var isDataLoaded = false
+
+    private var gridLevel = 4
+
+    private fun getColumnCount(): Int {
+        return when (gridLevel) {
+            1 -> 1
+            2 -> 2
+            3 -> 3
+            else -> 4
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_phone_main)
 
         recyclerView = findViewById(R.id.channel_list)
-        recyclerView.layoutManager = GridLayoutManager(this, 4)
-
-        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        toolbar = findViewById(R.id.toolbar)
         setSupportActionBar(toolbar)
 
+        val gridLayoutManager = GridLayoutManager(this, getColumnCount())
+        recyclerView.layoutManager = gridLayoutManager
+        this.gridLayoutManager = gridLayoutManager
         swipeRefresh = findViewById(R.id.swipe_refresh)
         swipeRefresh.setOnRefreshListener {
             loadChannels()
         }
 
-        adapter = PhoneChannelAdapter { channel ->
+        adapter = PhoneChannelAdapter({ channel ->
             val intent = Intent(this, PhonePlaybackActivity::class.java)
             intent.putExtra("channel", channel)
             startActivity(intent)
-        }
+        }, getColumnCount())
         recyclerView.adapter = adapter
+
+        var scrollRunnable: Runnable? = null
+        recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                scrollRunnable?.let { recyclerView.removeCallbacks(it) }
+                scrollRunnable = Runnable {
+                    adapter.refreshPlayers()
+                }.apply {
+                    recyclerView.postDelayed(this, 100)
+                }
+            }
+        })
     }
 
     override fun onResume() {
@@ -52,6 +81,11 @@ class PhoneMainActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
         return when (item.itemId) {
+            R.id.action_grid -> {
+                gridLevel = if (gridLevel >= 4) 1 else gridLevel + 1
+                updateLayoutManager()
+                true
+            }
             R.id.action_settings -> {
                 startActivity(Intent(this, SettingsActivity::class.java))
                 true
@@ -60,21 +94,44 @@ class PhoneMainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateLayoutManager() {
+        val oldSpanCount = gridLayoutManager.spanCount
+        val newSpanCount = getColumnCount()
+        gridLayoutManager.spanCount = newSpanCount
+        
+        if (oldSpanCount != newSpanCount) {
+            adapter.updatePoolSize(newSpanCount)
+        }
+    }
+
     private fun loadChannels() {
+        if (isDataLoaded) {
+            adapter.submitList(allChannels.toList())
+            swipeRefresh.isRefreshing = false
+            
+            recyclerView.postDelayed({
+                adapter.refreshPlayers()
+            }, 300)
+            return
+        }
+
         swipeRefresh.isRefreshing = true
         CoroutineScope(Dispatchers.Main).launch {
             val channels = withContext(Dispatchers.IO) {
                 TvDataManager.fetchTvChannels(this@PhoneMainActivity)
             }
-            
-            val allChannels = mutableListOf<Movie>()
-            channels.values.forEach { allChannels.addAll(it) }
-            
-            adapter.submitList(allChannels)
-            swipeRefresh.isRefreshing = false
-            
-            if (allChannels.isEmpty()) {
-                Toast.makeText(this@PhoneMainActivity, "无法加载频道，请检查网络或源地址", Toast.LENGTH_SHORT).show()
+
+            if (!isDestroyed && !isFinishing) {
+                allChannels.clear()
+                channels.values.forEach { allChannels.addAll(it) }
+
+                adapter.submitList(allChannels.toList())
+                swipeRefresh.isRefreshing = false
+                isDataLoaded = true
+
+                recyclerView.postDelayed({
+                    adapter.refreshPlayers()
+                }, 300)
             }
         }
     }
