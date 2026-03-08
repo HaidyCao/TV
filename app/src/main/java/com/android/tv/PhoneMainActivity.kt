@@ -3,7 +3,10 @@ package com.android.tv
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
+import android.view.ViewTreeObserver
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.util.UnstableApi
@@ -26,6 +29,7 @@ class PhoneMainActivity : AppCompatActivity() {
 
     private val allChannels = mutableListOf<Movie>()
     private var isDataLoaded = false
+    private var isInitialLayoutComplete = false
 
     private var gridLevel = 4
 
@@ -97,13 +101,30 @@ class PhoneMainActivity : AppCompatActivity() {
         })
         
         // 布局完成监听器，用于初始加载时更新可见范围并触发预览生成
-        recyclerView.viewTreeObserver.addOnGlobalLayoutListener {
-            val firstVisible = gridLayoutManager.findFirstVisibleItemPosition()
-            val lastVisible = gridLayoutManager.findLastVisibleItemPosition()
-            if (firstVisible != RecyclerView.NO_POSITION && lastVisible != RecyclerView.NO_POSITION) {
-                adapter.updateVisibleRange(firstVisible, lastVisible)
+        // 只在第一次布局完成后触发
+        recyclerView.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                if (isInitialLayoutComplete) {
+                    return
+                }
+
+                val firstVisible = gridLayoutManager.findFirstVisibleItemPosition()
+                val lastVisible = gridLayoutManager.findLastVisibleItemPosition()
+                if (firstVisible != RecyclerView.NO_POSITION && lastVisible != RecyclerView.NO_POSITION) {
+                    isInitialLayoutComplete = true
+                    adapter.updateVisibleRange(firstVisible, lastVisible)
+
+                    // 移除监听器，避免重复触发
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                        recyclerView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        recyclerView.viewTreeObserver.removeGlobalOnLayoutListener(this)
+                    }
+                    Log.d("PhoneMainActivity", "[LAYOUT] Initial layout complete")
+                }
             }
-        }
+        })
     }
 
     override fun onResume() {
@@ -143,7 +164,8 @@ class PhoneMainActivity : AppCompatActivity() {
         if (isDataLoaded) {
             adapter.submitList(allChannels.toList())
             swipeRefresh.isRefreshing = false
-            
+
+            // 只需要调用一次，避免重复
             recyclerView.postDelayed({
                 adapter.refreshPlayers()
             }, 300)
@@ -160,19 +182,21 @@ class PhoneMainActivity : AppCompatActivity() {
                 allChannels.clear()
                 channels.values.forEach { allChannels.addAll(it) }
 
-            adapter.submitList(allChannels.toList())
-            swipeRefresh.isRefreshing = false
-            isDataLoaded = true
-            
-            // 延迟触发预览生成，确保布局已完成
-            recyclerView.postDelayed({
-                adapter.refreshPlayers()
-            }, 500)
+                adapter.submitList(allChannels.toList())
+                swipeRefresh.isRefreshing = false
+                isDataLoaded = true
 
+                // 延迟触发预览生成，确保布局已完成
                 recyclerView.postDelayed({
                     adapter.refreshPlayers()
-                }, 300)
+                }, 500)
             }
         }
+    }
+
+    override fun onDestroy() {
+        // 清理预览生成器
+        PreviewGenerator.destroy()
+        super.onDestroy()
     }
 }

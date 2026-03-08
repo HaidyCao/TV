@@ -2,94 +2,132 @@ package com.android.tv
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.SurfaceTexture
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import android.util.LruCache
 import android.view.LayoutInflater
-import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
-import kotlin.math.abs
 
 /**
- * 简化的频道适配器，ViewHolder管理自己的预览生成，使用LRU缓存
- * 修复：Handler on a dead thread 错误，采用更稳健的 ExoPlayer 生命周期管理
- * 通过在主线程 Looper 上延迟释放播放器，并确保在回收时完全清理。
+ * 使用独立预览生成器的频道适配器
+ * 预览生成集中在 PreviewGenerator 单例中，通过优先级队列管理
  */
-@UnstableApi
 class PhoneChannelAdapter(
     private val onClick: (Movie) -> Unit,
     private val spanCount: Int
 ) : ListAdapter<Movie, PhoneChannelAdapter.ViewHolder>(DiffCallback()) {
 
-    var recyclerView: RecyclerView? = null
-    val previewCache: LruCache<String, Bitmap> = LruCache(calculateCacheSize())
+    private var recyclerView: RecyclerView? = null
     private var firstVisiblePosition = 0
     private var lastVisiblePosition = 0
 
-    // 跟踪活跃的 ViewHolder 以便在 RecyclerView 分离时清理
-    private val attachedViewHolders = mutableSetOf<ViewHolder>()
-    private var renderersFactory: DefaultRenderersFactory? = null
+    // 隐藏容器，用于预览生成（必须附加到窗口才能创建 Surface）
+    private val hiddenContainer by lazy {
+        FrameLayout(recyclerView?.context?.applicationContext ?: throw IllegalStateException("Context not set")).apply {
+            layoutParams = ViewGroup.LayoutParams(1, 1)
+            // 不能使用 GONE，否则 Surface 不会被创建
+            // 使用透明度和极小尺寸
+            alpha = 0f
+            translationX = -10000f
+            translationY = -10000f
+        }
+    }
 
     companion object {
         private const val TAG = "PhoneChannelAdapter"
-        private const val PREVIEW_DURATION_MS = 1000L
-    }
-
-    private fun getRenderersFactory(context: Context): DefaultRenderersFactory {
-        if (renderersFactory == null) {
-            renderersFactory = DefaultRenderersFactory(context.applicationContext)
-                .setEnableDecoderFallback(true)
-                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-        }
-        return renderersFactory!!
+        private const val PRIORITY_CURRENT_SCREEN = 0 // 当前屏幕显示的项优先级（最高）
+        private const val PRIORITY_PREV_SCREEN = 100 // 上一屏的项优先级
+        private const val PRIORITY_NEXT_SCREEN = 150 // 下一屏的项优先级
+        // 更远的项不加载预览
+        private const val PAYLOAD_PREVIEW_READY = "preview_ready"
     }
 
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
         this.recyclerView = recyclerView
+
+        // 将隐藏容器添加到 RecyclerView 的父容器中
+        val parent = recyclerView.parent as? ViewGroup
+        if (parent != null && hiddenContainer.parent == null) {
+            parent.addView(hiddenContainer, 0)
+            Log.d(TAG, "[LIFECYCLE] Hidden container added to parent, isAttached=${hiddenContainer.isAttachedToWindow}")
+        }
+
+        // 初始化预览生成器
+        PreviewGenerator.init(hiddenContainer) { videoUrl, bitmap ->
+            // 预览完成回调
+            onPreviewReady(videoUrl, bitmap)
+        }
+
+        Log.d(TAG, "[LIFECYCLE] Attached to RecyclerView")
     }
 
     override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
-        // 清理所有活跃的 ViewHolder 中的播放器
-        val holders = attachedViewHolders.toList()
-        attachedViewHolders.clear()
-        holders.forEach { it.cleanup() }
+        Log.d(TAG, "[LIFECYCLE] Detached from RecyclerView")
 
-        previewCache.evictAll()
-        renderersFactory = null
+        // 移除隐藏容器
+        val parent = hiddenContainer.parent as? ViewGroup
+        parent?.removeView(hiddenContainer)
+
+        // 清理预览生成器
+        PreviewGenerator.clearAll()
+
         this.recyclerView = null
         super.onDetachedFromRecyclerView(recyclerView)
     }
 
-    fun updateVisibleRange(firstVisible: Int, lastVisible: Int) {
-        android.util.Log.d(
-            TAG,
-            "updateVisibleRange: firstVisible=$firstVisible, lastVisible=$lastVisible"
-        )
-        firstVisiblePosition = firstVisible
-        lastVisiblePosition = lastVisible
+    /**
+     * 预览完成回调
+     */
+    private fun onPreviewReady(videoUrl: String, bitmap: Bitmap) {
+        Log.d(TAG, "[PREVIEW] Ready: $videoUrl")
 
-        // 通知可见ViewHolder开始生成预览
-        for (position in firstVisible..lastVisible) {
-            val holder = recyclerView?.findViewHolderForAdapterPosition(position) as? ViewHolder
-            holder?.startPreviewIfNeeded()
+        // 查找所有匹配该视频 URL 的位置并刷新
+        val positions = mutableListOf<Int>()
+        for (i in 0 until currentList.size) {
+            if (currentList[i].videoUrl == videoUrl) {
+                positions.add(i)
+            }
+        }
+
+        // 刷新匹配的项
+        positions.forEach { position ->
+            notifyItemChanged(position, PAYLOAD_PREVIEW_READY)
         }
     }
 
+    /**
+     * 更新可见范围，重新调度预览生成
+     * 防抖机制：只有可见范围真正发生变化时才会调度
+     */
+    fun updateVisibleRange(firstVisible: Int, lastVisible: Int) {
+        // 检查可见范围是否真的发生了变化
+        if (firstVisible == firstVisiblePosition && lastVisible == lastVisiblePosition) {
+            Log.d(TAG, "[VISIBLE] Skipping - range not changed: $firstVisible-$lastVisible")
+            return // 范围未变化，跳过调度
+        }
+
+        android.util.Log.d(
+            TAG,
+            "[VISIBLE] Update: $firstVisiblePosition-$lastVisiblePosition → $firstVisible-$lastVisible"
+        )
+
+        firstVisiblePosition = firstVisible
+        lastVisiblePosition = lastVisible
+
+        // 重新调度预览请求
+        schedulePreviews()
+    }
+
+    /**
+     * 刷新播放器（重新调度预览）
+     */
     fun refreshPlayers() {
         val layoutManager =
             recyclerView?.layoutManager as? androidx.recyclerview.widget.GridLayoutManager
@@ -98,60 +136,132 @@ class PhoneChannelAdapter(
         updateVisibleRange(firstVisible, lastVisible)
     }
 
-    private fun calculateCacheSize(): Int {
-        val maxMemory = Runtime.getRuntime().maxMemory() / 1024
-        return (maxMemory / 8).toInt()
+    /**
+     * 调度预览生成
+     * 优先级策略：
+     * 1. 当前屏幕显示的项（最高优先级）
+     * 2. 上一屏的项
+     * 3. 下一屏的项
+     * 4. 更远的项
+     * 5. 背景项（最低优先级）
+     */
+    private fun schedulePreviews() {
+        val rv = recyclerView ?: return
+        val layoutManager = rv.layoutManager as? androidx.recyclerview.widget.GridLayoutManager
+            ?: return
+
+        val firstVisible = layoutManager.findFirstVisibleItemPosition()
+        val lastVisible = layoutManager.findLastVisibleItemPosition()
+        val itemCount = currentList.size
+
+        // 计算屏幕可见项的数量，用来估算一屏有多少项
+        val visibleCount = if (lastVisible >= firstVisible) lastVisible - firstVisible + 1 else 0
+        val oneScreenItemCount = if (visibleCount > 0) visibleCount else spanCount * 2 // 默认估算值
+
+        // 计算各范围的边界
+        val firstPrevScreen = (firstVisible - oneScreenItemCount).coerceAtLeast(0)
+        val lastPrevScreen = firstVisible - 1
+        val firstNextScreen = lastVisible + 1
+        val lastNextScreen = (lastVisible + oneScreenItemCount).coerceAtMost(itemCount - 1)
+        val firstFar = (lastNextScreen + 1).coerceAtMost(itemCount - 1)
+        val lastFar = itemCount - 1
+
+        Log.d(TAG, "[SCHEDULE] Total=$itemCount, Visible=$firstVisible-$lastVisible, " +
+                "PrevScreen=$firstPrevScreen-$lastPrevScreen, " +
+                "NextScreen=$firstNextScreen-$lastNextScreen")
+
+        // 为每个 item 调度预览，使用 Map 来跟踪已处理的 videoUrl
+        val processedVideoUrls = mutableMapOf<String, Int>() // videoUrl -> priority
+
+        for (position in 0 until itemCount) {
+            val movie = currentList[position]
+            val videoUrl = movie.videoUrl ?: continue
+
+            // 只加载当前屏和上下一屏的预览，更远的不加载
+            val isInRange = position in firstPrevScreen..lastNextScreen
+            if (!isInRange) {
+                Log.d(TAG, "[SCHEDULE] Skipping far position: $position, URL: $videoUrl")
+                continue
+            }
+
+            // 计算优先级：当前屏幕 > 上一屏 > 下一屏
+            val priority = when {
+                position in firstVisible..lastVisible -> PRIORITY_CURRENT_SCREEN
+                position in firstPrevScreen..lastPrevScreen -> PRIORITY_PREV_SCREEN
+                position in firstNextScreen..lastNextScreen -> PRIORITY_NEXT_SCREEN
+                else -> continue // 更远的项不加载
+            }
+
+            // 去重逻辑：只保留相同 videoUrl 的最高优先级请求
+            if (processedVideoUrls.containsKey(videoUrl)) {
+                // 如果已存在，只更新更高优先级的请求
+                if (priority < processedVideoUrls[videoUrl]!!) {
+                    processedVideoUrls[videoUrl] = priority
+                    PreviewGenerator.requestPreview(videoUrl, priority, 1080, 608)
+                    Log.d(TAG, "[SCHEDULE] Updating priority for existing URL: $videoUrl -> $priority")
+                }
+            } else {
+                // 新 URL，添加到处理过的列表中
+                processedVideoUrls[videoUrl] = priority
+                PreviewGenerator.requestPreview(videoUrl, priority, 1080, 608)
+                Log.d(TAG, "[SCHEDULE] Adding new request: $videoUrl, priority=$priority")
+            }
+        }
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_channel, parent, false)
-        return ViewHolder(view, this, onClick)
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.item_channel, parent, false)
+        return ViewHolder(view, onClick)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         holder.bind(getItem(position), position)
     }
 
-    override fun onViewAttachedToWindow(holder: ViewHolder) {
-        super.onViewAttachedToWindow(holder)
-        attachedViewHolders.add(holder)
-    }
-
-    override fun onViewDetachedFromWindow(holder: ViewHolder) {
-        Log.d(TAG, "[TEST] onViewDetachedFromWindow() called")
-        attachedViewHolders.remove(holder)
-        holder.cleanup()
-        super.onViewDetachedFromWindow(holder)
+    override fun onBindViewHolder(holder: ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains(PAYLOAD_PREVIEW_READY)) {
+            // 预览就绪，只更新预览图
+            val movie = getItem(position)
+            val videoUrl = movie.videoUrl ?: return
+            val bitmap = PreviewGenerator.previewCache.get(videoUrl)
+            if (bitmap != null) {
+                holder.showPreview(bitmap)
+            }
+        } else {
+            // 完整绑定
+            holder.bind(getItem(position), position)
+        }
     }
 
     override fun onViewRecycled(holder: ViewHolder) {
-        Log.d(TAG, "[TEST] onViewRecycled() called")
         holder.cleanup()
         super.onViewRecycled(holder)
     }
 
     inner class ViewHolder(
         itemView: View,
-        private val adapter: PhoneChannelAdapter,
         private val onClick: (Movie) -> Unit
-    ) : RecyclerView.ViewHolder(itemView), TextureView.SurfaceTextureListener {
+    ) : RecyclerView.ViewHolder(itemView) {
 
         private val title: TextView = itemView.findViewById(R.id.channel_title)
         private val image: ImageView = itemView.findViewById(R.id.channel_image)
-        private val videoContainer: FrameLayout = itemView.findViewById(R.id.video_container)
+        private val videoContainer: View = itemView.findViewById(R.id.video_container)
+        private val liveBadge: View = itemView.findViewById(R.id.live_badge)
 
-        private var textureView: TextureView? = null
-        private var player: ExoPlayer? = null
         private var currentVideoUrl: String? = null
-        private var hasPreview = false
-        private var isSurfaceReady = false
-        private var currentPosition: Int = -1
 
         fun bind(movie: Movie, position: Int) {
-            this.currentPosition = position
-            title.text = movie.title
+            currentVideoUrl = movie.videoUrl
 
-            Log.d(TAG, "[TEST] bind() called for position=$position, movie=${movie.title}")
+            title.text = movie.title
+            Log.d(TAG, "[BIND] Position=$position, title=${movie.title}")
+
+            // 确保 video_container 可见，这样内部的 ImageView 才能显示
+            videoContainer.visibility = View.VISIBLE
+
+            // 隐藏直播标识
+            liveBadge.visibility = View.GONE
 
             // 加载封面图
             if (movie.cardImageUrl != null) {
@@ -166,271 +276,27 @@ class PhoneChannelAdapter(
 
             itemView.setOnClickListener { onClick(movie) }
 
-            // 重置状态
-            hasPreview = false
-            isSurfaceReady = false
-            cleanup()
-
+            // 从缓存加载预览
             val videoUrl = movie.videoUrl
-            Log.d(TAG, "[TEST] bind() videoUrl=${videoUrl != null}")
             if (videoUrl != null) {
-                currentVideoUrl = videoUrl
-                val cachedBitmap = adapter.previewCache.get(videoUrl)
-                Log.d(TAG, "[TEST] bind() cachedBitmap=${cachedBitmap != null}")
+                val cachedBitmap = PreviewGenerator.previewCache.get(videoUrl)
                 if (cachedBitmap != null) {
                     showPreview(cachedBitmap)
-                } else {
-                    Log.d(TAG, "[TEST] bind() shouldGeneratePreview=true")
                 }
-            }
-        }
-
-        fun startPreviewIfNeeded() {
-            Log.d(TAG, "[TEST] startPreviewIfNeeded() called for pos=$currentPosition")
-            Log.d(
-                TAG,
-                "[TEST] startPreviewIfNeeded() hasPreview=$hasPreview, currentVideoUrl=${currentVideoUrl != null}"
-            )
-
-            if (hasPreview || currentVideoUrl == null || textureView != null) {
-                Log.w(
-                    TAG,
-                    "[TEST] startPreviewIfNeeded() SKIPPED: hasPreview=$hasPreview, hasUrl=${currentVideoUrl != null}"
-                )
-                return
-            }
-
-            Log.d(TAG, "[TEST] startPreviewIfNeeded() CREATING texture for pos=$currentPosition")
-            createTextureView()
-        }
-
-        private fun createTextureView() {
-            Log.d(TAG, "[TEST] createTextureView() called for pos=$currentPosition")
-            cleanupTextureView()
-
-            val newTextureView = TextureView(itemView.context).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-                surfaceTextureListener = this@ViewHolder
-            }
-
-            textureView = newTextureView
-            videoContainer.addView(newTextureView, 0)
-            image.visibility = View.GONE
-            Log.d(TAG, "[TEST] createTextureView() TextureView ADDED for pos=$currentPosition")
-        }
-
-        override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-            Log.d(
-                TAG,
-                "[TEST] onSurfaceTextureAvailable() pos=$currentPosition size=${width}x${height}"
-            )
-            isSurfaceReady = true
-            currentVideoUrl?.let {
-                Log.d(
-                    TAG,
-                    "[TEST] onSurfaceTextureAvailable() calling startPlayback for pos=$currentPosition"
-                )
-                startPlayback(it)
-            } ?: Log.w(
-                TAG,
-                "[TEST] onSurfaceTextureAvailable() currentVideoUrl is null for pos=$currentPosition"
-            )
-        }
-
-        override fun onSurfaceTextureSizeChanged(
-            surface: SurfaceTexture,
-            width: Int,
-            height: Int
-        ) {
-        }
-
-        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-            isSurfaceReady = false
-            cleanupPlayer()
-            return true
-        }
-
-        override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-
-        private fun startPlayback(videoUrl: String) {
-            Log.d(
-                TAG,
-                "[TEST] startPlayback() called for pos=$currentPosition, isSurfaceReady=$isSurfaceReady"
-            )
-            if (!isSurfaceReady || adapter.recyclerView == null) {
-                Log.w(
-                    TAG,
-                    "[TEST] startPlayback() ABORTED for pos=$currentPosition: isSurfaceReady=$isSurfaceReady, recyclerView=${adapter.recyclerView != null}"
-                )
-                return
-            }
-
-            cleanupPlayer()
-
-            try {
-                val factory = adapter.getRenderersFactory(itemView.context)
-                val newPlayer = ExoPlayer.Builder(itemView.context.applicationContext, factory)
-                    .setLooper(Looper.getMainLooper())
-                    .build().apply {
-                        volume = 0f
-                        playWhenReady = true
-                    }
-
-                player = newPlayer
-                newPlayer.setVideoTextureView(textureView)
-                newPlayer.setMediaItem(MediaItem.fromUri(videoUrl))
-
-                // 添加监听器，等待真正开始播放后再延迟捕获
-                newPlayer.addListener(object : androidx.media3.common.Player.Listener {
-                    private var captureScheduled = false
-
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        if (newPlayer.isReleased) {
-                            return
-                        }
-
-                        if (isPlaying && !captureScheduled) {
-                            captureScheduled = true
-                            Log.d(
-                                TAG,
-                                "[TEST] Player started playing, scheduling capture in ${PREVIEW_DURATION_MS}ms for pos=$currentPosition"
-                            )
-
-                            currentVideoUrl?.let { captureFrame(it) }
-                        }
-                    }
-
-                    override fun onPlaybackStateChanged(state: Int) {
-                        Log.d(TAG, "onPlaybackStateChanged() called with: state = $state")
-                        if (state == androidx.media3.common.Player.STATE_ENDED) {
-                            Log.d(TAG, "[TEST] Playback ended for pos=$currentPosition")
-                        } else if (state == androidx.media3.common.Player.STATE_IDLE && newPlayer.playerError != null) {
-                            Log.w(
-                                TAG,
-                                "[TEST] Playback error for pos=$currentPosition: ${newPlayer.playerError}"
-                            )
-                            cleanup()
-                        }
-                    }
-                })
-
-                newPlayer.prepare()
-                Log.d(
-                    TAG,
-                    "[TEST] startPlayback() player prepared, waiting for playback to start for pos=$currentPosition"
-                )
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Error starting playback at pos $currentPosition", e)
-                cleanup()
-            }
-        }
-
-        private fun captureFrame(videoUrl: String) {
-            Log.d(TAG, "[TEST] captureFrame() called for pos=$currentPosition")
-            val texture = textureView
-            if (texture == null || player == null) {
-                Log.w(
-                    TAG,
-                    "[TEST] captureFrame() ABORTED for pos=$currentPosition: texture=${texture != null}, player=${player != null}"
-                )
-                cleanupPlayer()
-                return
-            }
-
-            try {
-                val bitmap = texture.bitmap
-                Log.d(
-                    TAG,
-                    "[TEST] captureFrame() bitmap captured=${bitmap != null} for pos=$currentPosition"
-                )
-                if (bitmap != null) {
-                    adapter.previewCache.put(videoUrl, bitmap)
-                    Log.d(TAG, "[TEST] captureFrame() bitmap cached for pos=$currentPosition")
-                    showPreview(bitmap)
-                    updateOtherHolders(videoUrl, bitmap)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "[TEST] captureFrame() EXCEPTION for pos=$currentPosition", e)
-            } finally {
-                cleanupTextureView()
             }
         }
 
         fun showPreview(bitmap: Bitmap) {
-            Log.d(
-                TAG,
-                "[TEST] showPreview() called for pos=$currentPosition, hasPreview=$hasPreview"
-            )
-            if (hasPreview) {
-                Log.d(
-                    TAG,
-                    "[TEST] showPreview() SKIPPED for pos=$currentPosition: already has preview"
-                )
-                return
-            }
-            cleanup()
-
+            Log.d(TAG, "[PREVIEW] Showing for position=$bindingAdapterPosition")
+            // 确保 video_container 可见
+            videoContainer.visibility = View.VISIBLE
             image.setImageBitmap(bitmap)
             image.visibility = View.VISIBLE
-            hasPreview = true
-            textureView?.visibility = View.INVISIBLE
-            Log.d(TAG, "[TEST] showPreview() SUCCESS for pos=$currentPosition")
-        }
-
-        private fun updateOtherHolders(videoUrl: String, bitmap: Bitmap) {
-            val recyclerView = adapter.recyclerView ?: return
-            val layoutManager =
-                recyclerView.layoutManager as? androidx.recyclerview.widget.GridLayoutManager
-                    ?: return
-            val firstVisible = layoutManager.findFirstVisibleItemPosition()
-            val lastVisible = layoutManager.findLastVisibleItemPosition()
-
-            for (pos in firstVisible..lastVisible) {
-                if (pos == currentPosition) continue
-                val m = adapter.currentList.getOrNull(pos) ?: continue
-                if (m.videoUrl == videoUrl) {
-                    val holder = recyclerView.findViewHolderForAdapterPosition(pos) as? ViewHolder
-                    holder?.showPreview(bitmap)
-                }
-            }
         }
 
         fun cleanup() {
-            Log.d(TAG, "[TEST] cleanup() called for pos=$currentPosition")
-            // 移除所有与该 ViewHolder 相关的 Handler 回调
-            cleanupTextureView()
-            hasPreview = false
-            isSurfaceReady = false
-            Log.d(TAG, "[TEST] cleanup() completed for pos=$currentPosition")
-        }
-
-        private fun cleanupPlayer() {
-            Log.d(TAG, "cleanupPlayer() called")
-            val p = player
-            if (p != null) {
-                player = null
-                p.clearVideoTextureView(textureView)
-                // 使用 post 确保在主线程 Looper 的下一次迭代中释放，
-                // 这样可以避免在回调过程中直接释放可能导致的 MediaCodec 线程死锁或异常。
-                try {
-                    p.stop()
-                    p.release()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error releasing player", e)
-                }
-            }
-        }
-
-        private fun cleanupTextureView() {
-            cleanupPlayer()
-            textureView?.let {
-                it.surfaceTextureListener = null
-                videoContainer.removeView(it)
-            }
-            textureView = null
+            // 清理资源（不再需要清理播放器，由 PreviewGenerator 管理）
+            currentVideoUrl = null
         }
     }
 
