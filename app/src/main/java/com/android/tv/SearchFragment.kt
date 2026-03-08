@@ -8,8 +8,10 @@ import android.util.Log
 import androidx.leanback.app.SearchSupportFragment
 import androidx.leanback.widget.*
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.launch
 
+@UnstableApi
 class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResultProvider {
 
     private val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())

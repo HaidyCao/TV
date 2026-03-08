@@ -32,11 +32,10 @@ import android.widget.TextView
 import android.widget.Toast
 import android.view.WindowMetrics
 import android.view.WindowInsets
-
+import androidx.media3.common.util.UnstableApi
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
-
 import androidx.lifecycle.lifecycleScope
 import androidx.fragment.app.Fragment
 import kotlinx.coroutines.launch
@@ -44,6 +43,7 @@ import kotlinx.coroutines.launch
 /**
  * Loads a grid of cards with movies to browse.
  */
+@UnstableApi
 class MainFragment : BrowseSupportFragment() {
 
     private val mHandler = Handler(Looper.getMainLooper())
@@ -77,11 +77,15 @@ class MainFragment : BrowseSupportFragment() {
         mBackgroundManager.attach(requireActivity().window)
         mDefaultBackground = ContextCompat.getDrawable(requireContext(), R.drawable.default_background)
 
-        // 使用 WindowMetrics 获取屏幕尺寸，解决 DisplayMetrics 弃用问题
-        val windowMetrics: WindowMetrics = requireActivity().windowManager.currentWindowMetrics
         mMetrics = DisplayMetrics()
-        windowMetrics.bounds.width().also { mMetrics.widthPixels = it }
-        windowMetrics.bounds.height().also { mMetrics.heightPixels = it }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val windowMetrics: WindowMetrics = requireActivity().windowManager.currentWindowMetrics
+            windowMetrics.bounds.width().also { mMetrics.widthPixels = it }
+            windowMetrics.bounds.height().also { mMetrics.heightPixels = it }
+        } else {
+            @Suppress("DEPRECATION")
+            requireActivity().windowManager.defaultDisplay.getMetrics(mMetrics)
+        }
     }
 
     private fun setupUIElements() {

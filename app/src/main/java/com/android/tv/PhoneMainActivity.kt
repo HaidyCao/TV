@@ -1,9 +1,12 @@
 package com.android.tv
 
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.util.UnstableApi
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@UnstableApi
 class PhoneMainActivity : AppCompatActivity() {
 
     private lateinit var recyclerView: RecyclerView
@@ -18,11 +22,17 @@ class PhoneMainActivity : AppCompatActivity() {
     private lateinit var swipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
     private lateinit var toolbar: androidx.appcompat.widget.Toolbar
     private lateinit var gridLayoutManager: GridLayoutManager
+    private lateinit var sharedPreferences: SharedPreferences
 
     private val allChannels = mutableListOf<Movie>()
     private var isDataLoaded = false
 
     private var gridLevel = 4
+
+    companion object {
+        private const val PREFS_NAME = "app_settings"
+        private const val KEY_GRID_LEVEL = "grid_level"
+    }
 
     private fun getColumnCount(): Int {
         return when (gridLevel) {
@@ -36,6 +46,10 @@ class PhoneMainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_phone_main)
+
+        // 初始化 SharedPreferences 并读取保存的 gridLevel
+        sharedPreferences = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        gridLevel = sharedPreferences.getInt(KEY_GRID_LEVEL, 4)
 
         recyclerView = findViewById(R.id.channel_list)
         toolbar = findViewById(R.id.toolbar)
@@ -95,13 +109,11 @@ class PhoneMainActivity : AppCompatActivity() {
     }
 
     private fun updateLayoutManager() {
-        val oldSpanCount = gridLayoutManager.spanCount
         val newSpanCount = getColumnCount()
         gridLayoutManager.spanCount = newSpanCount
         
-        if (oldSpanCount != newSpanCount) {
-            adapter.updatePoolSize(newSpanCount)
-        }
+        // 保存 gridLevel 到 SharedPreferences
+        sharedPreferences.edit().putInt(KEY_GRID_LEVEL, gridLevel).apply()
     }
 
     private fun loadChannels() {

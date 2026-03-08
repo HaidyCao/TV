@@ -11,10 +11,12 @@ import android.widget.FrameLayout
 import android.widget.ProgressBar
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
+import androidx.media3.common.util.UnstableApi
 
 /**
  * BrowseErrorActivity shows how to use ErrorFragment.
  */
+@UnstableApi
 class BrowseErrorActivity : FragmentActivity() {
 
     private lateinit var mErrorFragment: ErrorFragment

@@ -2,10 +2,12 @@ package com.android.tv
 
 import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
+import androidx.media3.common.util.UnstableApi
 
 /**
  * Loads [MainFragment].
  */
+@UnstableApi
 class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {

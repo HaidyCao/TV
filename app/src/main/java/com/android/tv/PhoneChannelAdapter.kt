@@ -19,34 +19,13 @@ import androidx.media3.common.MediaItem
 
 class PhoneChannelAdapter(
     private val onClick: (Movie) -> Unit,
-    private val initialPlayerPoolSize: Int = 2
+    private val initialPlayerPoolSize: Int = 4,
+    private val previewDurationMs: Long = 3000L
 ) : ListAdapter<Movie, PhoneChannelAdapter.ViewHolder>(DiffCallback()) {
 
     private val playerPool = mutableListOf<ExoPlayer>()
-    private var playerPoolSize = initialPlayerPoolSize
     private val activeHolders = mutableSetOf<ViewHolder>()
-    private val holdersWaitingForSurface = mutableMapOf<ViewHolder, ExoPlayer>()
-    private var isManaging = false
-    private val playerPauseHandler = android.os.Handler(android.os.Looper.getMainLooper())
-
     private var recyclerView: RecyclerView? = null
-
-    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
-        super.onDetachedFromRecyclerView(recyclerView)
-        releasePlayerPool()
-    }
-
-    private fun initializePlayerPool() {
-        val context = recyclerView?.context ?: return
-        repeat(playerPoolSize) {
-            val player = ExoPlayer.Builder(context).build().apply {
-                volume = 0f
-                playWhenReady = true
-            }
-            playerPool.add(player)
-            android.util.Log.d("PhoneChannelAdapter", "Player created: ${player.hashCode()}, pool size: ${playerPool.size}")
-        }
-    }
 
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
@@ -54,109 +33,47 @@ class PhoneChannelAdapter(
         initializePlayerPool()
     }
 
-    private fun releasePlayerPool() {
-        playerPool.forEach { it.release() }
-        playerPool.clear()
-        holdersWaitingForSurface.clear()
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView)
+        releasePlayerPool()
+        this.recyclerView = null
     }
 
-    fun updatePoolSize(newSize: Int) {
-        if (playerPoolSize == newSize) return
-        
-        android.util.Log.d("PhoneChannelAdapter", "Updating pool size from $playerPoolSize to $newSize")
-        
-        val oldSize = playerPoolSize
-        playerPoolSize = newSize
-        
-        val targetPoolSize = newSize * 2
-        
-        while (playerPool.size < targetPoolSize) {
-            val context = recyclerView?.context ?: return
+    private fun initializePlayerPool() {
+        val context = recyclerView?.context ?: return
+        repeat(initialPlayerPoolSize) {
             val player = ExoPlayer.Builder(context).build().apply {
                 volume = 0f
                 playWhenReady = true
             }
             playerPool.add(player)
-            android.util.Log.d("PhoneChannelAdapter", "Player added: ${player.hashCode()}, pool size: ${playerPool.size}")
         }
-        
-        if (playerPool.size > targetPoolSize) {
-            while (playerPool.size > targetPoolSize) {
-                val player = playerPool.removeLastOrNull()
-                player?.release()
-                android.util.Log.d("PhoneChannelAdapter", "Player removed and released, pool size: ${playerPool.size}")
-            }
-        }
-        
-        activeHolders.clear()
-        holdersWaitingForSurface.clear()
-        refreshPlayers()
+    }
+
+    private fun releasePlayerPool() {
+        playerPool.forEach { it.release() }
+        playerPool.clear()
     }
 
     fun refreshPlayers() {
-        if (isManaging) return
-        isManaging = true
-        
-        android.util.Log.d("PhoneChannelAdapter", "refreshPlayers() called, pool size: ${playerPool.size}, active holders: ${activeHolders.size}")
-        
-        try {
-            val validHolders = activeHolders.filter { 
-                it.bindingAdapterPosition >= 0 && it.movie?.videoUrl != null
-            }
-            
-            val layoutManager = recyclerView?.layoutManager as? GridLayoutManager
-            val firstVisiblePosition = layoutManager?.findFirstVisibleItemPosition() ?: 0
-            
-            val rowStart = firstVisiblePosition
-            val rowEnd = firstVisiblePosition + playerPoolSize - 1
-            
-            android.util.Log.d("PhoneChannelAdapter", "First visible position: $firstVisiblePosition, Target range: $rowStart - $rowEnd")
-            
-            val visibleHolders = validHolders.filter { 
-                it.bindingAdapterPosition in rowStart..rowEnd
-            }
-            
-            val candidates = visibleHolders + validHolders.filter { holder ->
-                holder.player == null && holder.bindingAdapterPosition !in rowStart..rowEnd
-            }.sortedBy { it.bindingAdapterPosition }.take(playerPool.size - visibleHolders.size)
-            
-            val neededPlayers = candidates.filter { holder ->
-                holder.player == null
-            }
-            
-            android.util.Log.d("PhoneChannelAdapter", "Valid holders: ${validHolders.size}, Visible holders: ${visibleHolders.size}, Needed players: ${neededPlayers.size}")
+        val layoutManager = recyclerView?.layoutManager as? GridLayoutManager
+        val firstVisible = layoutManager?.findFirstVisibleItemPosition() ?: 0
+        val lastVisible = layoutManager?.findLastVisibleItemPosition() ?: firstVisible
 
-            neededPlayers.take(playerPool.size - validHolders.count { it.player != null }).forEach { holder ->
-                val availablePlayer = playerPool.find { player ->
-                   !validHolders.any { it.player === player }
-                }
-                
-                android.util.Log.d("PhoneChannelAdapter", "Available player for ${holder.movie?.title}: ${availablePlayer != null}")
-                
-                availablePlayer?.let { player ->
-                    holder.attachPlayer(player)
-                }
-            }
-            
-            visibleHolders.forEach { holder ->
-                holder.requestFocusOrContinue(true)
-            }
-            
-            val hiddenHolders = validHolders.filter { holder ->
-                holder.player != null && holder.bindingAdapterPosition !in rowStart..rowEnd
-            }
-            
-            hiddenHolders.forEach { holder ->
-                holder.requestFocusOrContinue(false)
-            }
-        } finally {
-            isManaging = false
-        }
-    }
+        val visibleHolders = activeHolders.filter { holder ->
+            val pos = holder.bindingAdapterPosition
+            pos in firstVisible..lastVisible && holder.movie?.videoUrl != null && !holder.hasPreview()
+        }.sortedBy { it.bindingAdapterPosition }
 
-    private fun getAvailablePlayer(): ExoPlayer? {
-        return playerPool.find { player ->
+        val freePlayers = playerPool.filter { player ->
             !activeHolders.any { it.player === player }
+        }
+
+        visibleHolders.take(freePlayers.size).forEachIndexed { index, holder ->
+            val player = freePlayers.getOrNull(index) ?: return@forEachIndexed
+            holder.startPreview(player) {
+                it.releasePlayerKeepPreview()
+            }
         }
     }
 
@@ -166,58 +83,39 @@ class PhoneChannelAdapter(
         return ViewHolder(view)
     }
 
-    override fun onBindViewHolder(holder: ViewHolder, position: Int, payloads: MutableList<Any>) {
-        onBindViewHolder(holder, position)
-    }
-
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         holder.bind(getItem(position))
     }
 
     override fun onViewRecycled(holder: ViewHolder) {
-        android.util.Log.d("PhoneChannelAdapter", "onViewRecycled for ${holder.movie?.title}")
-        holder.releasePlayer()
+        holder.onRecycled()
         activeHolders.remove(holder)
         super.onViewRecycled(holder)
-    }
-    
-    fun schedulePlayerUpdate() {
-        recyclerView?.postDelayed({
-            refreshPlayers()
-        }, 200)
     }
 
     inner class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val title: TextView = itemView.findViewById(R.id.channel_title)
         private val image: ImageView = itemView.findViewById(R.id.channel_image)
         private val videoContainer: ViewGroup = itemView.findViewById(R.id.video_container)
-        
+
         var player: ExoPlayer? = null
+            private set
         var movie: Movie? = null
-        var isPlaying = false
-        
+            private set
+        private var isPlaying = false
+        private var hasCapturedPreview = false
+
         private var textureView: TextureView? = null
         private var surfaceReady = false
-        
+        private var previewBitmap: android.graphics.Bitmap? = null
+
         private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                android.util.Log.d("PhoneChannelAdapter", "SurfaceTextureAvailable for ${movie?.title}")
                 surfaceReady = true
-                val waitingPlayer = holdersWaitingForSurface.remove(this@ViewHolder)
-                if (waitingPlayer != null) {
-                    android.util.Log.d("PhoneChannelAdapter", "Found waiting player, attaching")
-                    attachSurfaceAndPlay(waitingPlayer, surface)
-                } else if (player != null) {
-                    android.util.Log.d("PhoneChannelAdapter", "Player already exists, attaching")
-                    attachSurfaceAndPlay(player!!, surface)
-                }
             }
-
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                android.util.Log.d("PhoneChannelAdapter", "SurfaceTextureDestroyed for ${movie?.title}")
                 surfaceReady = false
-                player?.setVideoSurface(null)
                 return true
             }
             override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
@@ -226,7 +124,7 @@ class PhoneChannelAdapter(
         fun bind(movie: Movie) {
             this.movie = movie
             title.text = movie.title
-            
+
             if (movie.cardImageUrl != null) {
                 Glide.with(itemView.context)
                     .load(movie.cardImageUrl)
@@ -234,82 +132,85 @@ class PhoneChannelAdapter(
             } else {
                 image.setBackgroundColor(0xFF333333.toInt())
             }
-            
+
             itemView.setOnClickListener { onClick(movie) }
-            
-            android.util.Log.d("PhoneChannelAdapter", "bind called for ${movie.title}, pos: $bindingAdapterPosition, hasVideo: ${movie.videoUrl != null}, isPlaying: $isPlaying")
-            
-            if (movie.videoUrl != null && bindingAdapterPosition >= 0 && player == null) {
-                activeHolders.add(this)
-                schedulePlayerUpdate()
-            }
-        }
-
-        private var shouldContinue = true
-        
-        fun attachPlayer(playerToAttach: ExoPlayer?) {
-            if (playerToAttach == null) return
-            
-            android.util.Log.d("PhoneChannelAdapter", "attachPlayer called for ${movie?.title}, player: ${playerToAttach.hashCode()}, surfaceReady: $surfaceReady")
-            
-            this.player = playerToAttach
-            isPlaying = true
             activeHolders.add(this)
-            
-            if (surfaceReady) {
-                textureView?.surfaceTexture?.let { surface ->
-                    attachSurfaceAndPlay(playerToAttach, surface)
-                }
+
+            if (hasCapturedPreview && previewBitmap != null) {
+                image.setImageBitmap(previewBitmap)
+                image.visibility = View.VISIBLE
+                image.alpha = 1.0f
+            }
+
+            if (movie.videoUrl != null && !hasCapturedPreview) {
+                recyclerView?.postDelayed({
+                    refreshPlayers()
+                }, 100)
+            }
+        }
+
+        fun startPreview(exoPlayer: ExoPlayer, onComplete: (ViewHolder) -> Unit) {
+            player = exoPlayer
+            ensureTextureView()
+
+            if (surfaceReady && textureView?.surfaceTexture != null) {
+                startPlaying(exoPlayer, onComplete)
             } else {
-                ensureTextureView()
-                holdersWaitingForSurface[this] = playerToAttach
-                android.util.Log.d("PhoneChannelAdapter", "Holder added to waiting list, waiting for surface")
+                itemView.postDelayed({
+                    if (player == exoPlayer) {
+                        startPreview(exoPlayer, onComplete)
+                    }
+                }, 100)
             }
         }
 
-        fun requestFocusOrContinue(shouldContinue: Boolean) {
-            this.shouldContinue = shouldContinue
-            val currentPos = bindingAdapterPosition
-            val layoutManager = recyclerView?.layoutManager as? GridLayoutManager ?: return
-            val firstVisible = layoutManager.findFirstVisibleItemPosition()
-            val inFirstRow = currentPos in firstVisible..(firstVisible + playerPoolSize - 1)
-            
-            if (shouldContinue && inFirstRow) {
-                player?.playWhenReady = true
-                player?.play()
-                android.util.Log.d("PhoneChannelAdapter", "Continuing play for ${movie?.title}, pos: $currentPos")
-            } else if (!shouldContinue && !inFirstRow) {
-                player?.playWhenReady = false
-                android.util.Log.d("PhoneChannelAdapter", "Pausing play for ${movie?.title}, pos: $currentPos")
-            }
-        }
+        private fun startPlaying(exoPlayer: ExoPlayer, onComplete: (ViewHolder) -> Unit) {
+            val surfaceTexture = textureView?.surfaceTexture ?: return
 
-        private fun attachSurfaceAndPlay(exoPlayer: ExoPlayer, surface: SurfaceTexture) {
-            android.util.Log.d("PhoneChannelAdapter", "attachSurfaceAndPlay called for ${movie?.title}")
-            exoPlayer.setVideoSurface(Surface(surface))
+            exoPlayer.setVideoSurface(Surface(surfaceTexture))
             val mediaItem = MediaItem.fromUri(movie?.videoUrl ?: return)
             exoPlayer.setMediaItem(mediaItem)
+            exoPlayer.volume = 0f
             exoPlayer.prepare()
             exoPlayer.play()
-            android.util.Log.d("PhoneChannelAdapter", "Player started for ${movie?.title}")
-            
-            playerPauseHandler.postDelayed({
-                val currentPos = bindingAdapterPosition
-                val layoutManager = recyclerView?.layoutManager as? GridLayoutManager
-                val firstVisible = layoutManager?.findFirstVisibleItemPosition() ?: 0
-                val inFirstRow = currentPos in firstVisible..(firstVisible + playerPoolSize - 1)
-                
-                if (!inFirstRow) {
+
+            isPlaying = true
+
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (isPlaying && player == exoPlayer) {
+                    captureFrameAsPreview()
                     exoPlayer.playWhenReady = false
-                    android.util.Log.d("PhoneChannelAdapter", "Auto-paused after 1s for ${movie?.title}, pos: $currentPos")
+                    isPlaying = false
+                    hideVideoAndShowPreview()
+                    hasCapturedPreview = true
+                    onComplete(this)
                 }
-            }, 1000)
+            }, previewDurationMs)
+        }
+
+        private fun captureFrameAsPreview() {
+            textureView?.let { tv ->
+                try {
+                    previewBitmap = tv.bitmap
+                } catch (e: Exception) {
+                    android.util.Log.e("PhoneChannelAdapter", "Failed to capture frame", e)
+                }
+            }
+        }
+
+        private fun hideVideoAndShowPreview() {
+            textureView?.visibility = View.INVISIBLE
+
+            previewBitmap?.let { bitmap ->
+                image.setImageBitmap(bitmap)
+                image.visibility = View.VISIBLE
+                image.alpha = 1.0f
+            }
         }
 
         private fun ensureTextureView() {
-            android.util.Log.d("PhoneChannelAdapter", "ensureTextureView called for ${movie?.title}, existing: ${textureView != null}")
             if (textureView != null) return
-            
+
             textureView = TextureView(itemView.context).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -317,33 +218,44 @@ class PhoneChannelAdapter(
                 )
                 surfaceTextureListener = this@ViewHolder.surfaceTextureListener
             }
-            
-            val transparentViewIndex = videoContainer.childCount - 2
-            videoContainer.addView(textureView, transparentViewIndex)
+
+            videoContainer.addView(textureView, 0)
             image.visibility = View.GONE
-            android.util.Log.d("PhoneChannelAdapter", "TextureView added, children count: ${videoContainer.childCount}")
         }
 
-        fun releasePlayer() {
-            android.util.Log.d("PhoneChannelAdapter", "releasePlayer called for ${movie?.title}")
-            player?.stop()
-            player?.clearVideoSurface()
-            isPlaying = false
+        fun releasePlayerKeepPreview() {
+            player?.let { exoPlayer ->
+                exoPlayer.stop()
+                exoPlayer.clearVideoSurface()
+            }
             player = null
-            shouldContinue = true
-            
-            holdersWaitingForSurface.remove(this)
-            textureView?.surfaceTextureListener = null
-            val tv = textureView
-            if (tv != null) {
+            isPlaying = false
+
+            textureView?.let { tv ->
                 videoContainer.removeView(tv)
             }
             textureView = null
             surfaceReady = false
-            
-            image.visibility = View.VISIBLE
-            android.util.Log.d("PhoneChannelAdapter", "releasePlayer completed")
         }
+
+        fun onRecycled() {
+            // 只释放播放器资源，保留预览图以便滚动回来时显示
+            releasePlayerKeepPreview()
+            // 重要：不清除 ImageView 的 Bitmap，这样预览图会保持显示
+            // 也不回收 previewBitmap，保留它供下次使用
+        }
+        
+        fun onDestroyed() {
+            // ViewHolder 真正被销毁时才清理所有资源
+            image.setImageDrawable(null)
+            image.setImageBitmap(null)
+            releasePlayerKeepPreview()
+            previewBitmap?.recycle()
+            previewBitmap = null
+            hasCapturedPreview = false
+        }
+
+        fun hasPreview(): Boolean = hasCapturedPreview && previewBitmap != null
     }
 
     class DiffCallback : DiffUtil.ItemCallback<Movie>() {
