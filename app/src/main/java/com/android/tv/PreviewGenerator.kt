@@ -147,13 +147,21 @@ object PreviewGenerator {
     }
 
     /**
+     * 只清空预览请求队列，保留预览缓存
+     */
+    fun clearQueue() {
+        Log.d(TAG, "[CLEAR] Clearing preview request queue")
+        requestQueue.clear()
+        activeTasks.values.forEach { it.cancel() }
+        activeTasks.clear()
+    }
+
+    /**
      * 清空所有请求和缓存
      */
     fun clearAll() {
         Log.d(TAG, "[CLEAR] Clearing all requests and cache")
-        requestQueue.clear()
-        activeTasks.values.forEach { it.cancel() }
-        activeTasks.clear()
+        clearQueue()
         previewCache.evictAll()
     }
 

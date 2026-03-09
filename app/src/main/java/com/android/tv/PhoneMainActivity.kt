@@ -49,6 +49,7 @@ class PhoneMainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d("PhoneMainActivity", "[LIFECYCLE] onCreate called")
         setContentView(R.layout.activity_phone_main)
 
         // 初始化 SharedPreferences 并读取保存的 gridLevel
@@ -125,11 +126,17 @@ class PhoneMainActivity : AppCompatActivity() {
                 }
             }
         })
+
+        // 只在 onCreate 时加载一次数据
+        loadChannels()
     }
 
     override fun onResume() {
         super.onResume()
-        loadChannels()
+        Log.d("PhoneMainActivity", "[LIFECYCLE] onResume called")
+        // 数据和预览图都不重新加载，保持原样
+        // 只在 onCreate() 中加载一次数据
+        // ViewHolder 重新绑定时会自动从缓存中读取预览图
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu?): Boolean {
@@ -162,13 +169,8 @@ class PhoneMainActivity : AppCompatActivity() {
 
     private fun loadChannels() {
         if (isDataLoaded) {
-            adapter.submitList(allChannels.toList())
+            // 数据已加载，无需再次 submitList()，避免 RecyclerView 重新绑定
             swipeRefresh.isRefreshing = false
-
-            // 只需要调用一次，避免重复
-            recyclerView.postDelayed({
-                adapter.refreshPlayers()
-            }, 300)
             return
         }
 
@@ -196,6 +198,7 @@ class PhoneMainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         // 清理预览生成器
+        Log.d("PhoneMainActivity", "onDestroy() called")
         PreviewGenerator.destroy()
         super.onDestroy()
     }

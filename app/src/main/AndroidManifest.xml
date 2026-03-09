@@ -39,6 +39,7 @@
             android:name=".PhoneMainActivity"
             android:exported="true"
             android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.TV.Phone">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

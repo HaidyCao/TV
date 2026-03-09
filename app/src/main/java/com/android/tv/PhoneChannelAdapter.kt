@@ -75,8 +75,8 @@ class PhoneChannelAdapter(
         val parent = hiddenContainer.parent as? ViewGroup
         parent?.removeView(hiddenContainer)
 
-        // 清理预览生成器
-        PreviewGenerator.clearAll()
+        // 只清空预览请求队列，保留预览缓存
+        PreviewGenerator.clearQueue()
 
         this.recyclerView = null
         super.onDetachedFromRecyclerView(recyclerView)
@@ -104,11 +104,11 @@ class PhoneChannelAdapter(
 
     /**
      * 更新可见范围，重新调度预览生成
-     * 防抖机制：只有可见范围真正发生变化时才会调度
+     * 防抖机制：只有可见范围真正发生变化时才会调度，除非强制刷新
      */
-    fun updateVisibleRange(firstVisible: Int, lastVisible: Int) {
-        // 检查可见范围是否真的发生了变化
-        if (firstVisible == firstVisiblePosition && lastVisible == lastVisiblePosition) {
+    fun updateVisibleRange(firstVisible: Int, lastVisible: Int, forceRefresh: Boolean = false) {
+        // 检查可见范围是否真的发生了变化，或者是否需要强制刷新
+        if (!forceRefresh && firstVisible == firstVisiblePosition && lastVisible == lastVisiblePosition) {
             Log.d(TAG, "[VISIBLE] Skipping - range not changed: $firstVisible-$lastVisible")
             return // 范围未变化，跳过调度
         }
@@ -128,12 +128,12 @@ class PhoneChannelAdapter(
     /**
      * 刷新播放器（重新调度预览）
      */
-    fun refreshPlayers() {
+    fun refreshPlayers(forceRefresh: Boolean = false) {
         val layoutManager =
             recyclerView?.layoutManager as? androidx.recyclerview.widget.GridLayoutManager
         val firstVisible = layoutManager?.findFirstVisibleItemPosition() ?: 0
         val lastVisible = layoutManager?.findLastVisibleItemPosition() ?: firstVisible
-        updateVisibleRange(firstVisible, lastVisible)
+        updateVisibleRange(firstVisible, lastVisible, forceRefresh)
     }
 
     /**
