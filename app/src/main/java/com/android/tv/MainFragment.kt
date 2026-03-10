@@ -19,6 +19,7 @@ import androidx.leanback.widget.ListRow
 import androidx.leanback.widget.ListRowPresenter
 import androidx.leanback.widget.OnItemViewClickedListener
 import androidx.leanback.widget.OnItemViewSelectedListener
+import androidx.leanback.widget.ObjectAdapter
 import androidx.leanback.widget.Presenter
 import androidx.leanback.widget.Row
 import androidx.leanback.widget.RowPresenter
@@ -39,6 +40,7 @@ import com.bumptech.glide.request.transition.Transition
 import androidx.lifecycle.lifecycleScope
 import androidx.fragment.app.Fragment
 import kotlinx.coroutines.launch
+import android.graphics.Bitmap
 
 /**
  * Loads a grid of cards with movies to browse.
@@ -53,12 +55,20 @@ class MainFragment : BrowseSupportFragment() {
     private var mBackgroundTimer: Timer? = null
     private var mBackgroundUri: String? = null
 
+    // 行适配器，用于访问和更新数据
+    private var rowsAdapter: ArrayObjectAdapter? = null
+
+    // PreviewGenerator 相关
+    private var isPreviewGeneratorInitialized = false
+    private var previewScheduleRunnable: Runnable? = null
+    private val PREVIEW_DEBOUNCE_MS = 100L
+
     private val NUM_ROWS = 6
     private val NUM_COLS = 15
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
-        Log.i(TAG, "onCreate")
+        Log.i(TAG.d, "onActivityCreated: savedInstanceState=${savedInstanceState != null}")
 
         prepareBackgroundManager()
         setupUIElements()
@@ -66,10 +76,43 @@ class MainFragment : BrowseSupportFragment() {
         setupEventListeners()
     }
 
+    override fun onStart() {
+        super.onStart()
+        Log.d(TAG.d, "onStart")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Log.d(TAG.d, "onResume")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.d(TAG.d, "onPause")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Log.d(TAG.d, "onStop")
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "onDestroy: " + mBackgroundTimer?.toString())
+        Log.d(TAG.d, "onDestroy: " + mBackgroundTimer?.toString())
         mBackgroundTimer?.cancel()
+        previewScheduleRunnable?.let { mHandler.removeCallbacks(it) }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        Log.d(TAG.d, "onDestroyView")
+        // 清理预览队列
+        PreviewGenerator.clearQueue()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        Log.d(TAG.d, "onSaveInstanceState")
     }
 
     private fun prepareBackgroundManager() {
@@ -102,16 +145,24 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun loadRows() {
         lifecycleScope.launch {
-            val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
+            val adapter = ArrayObjectAdapter(ListRowPresenter())
             val cardPresenter = CardPresenter()
+
+            // 初始化 PreviewGenerator
+            if (!isPreviewGeneratorInitialized) {
+                isPreviewGeneratorInitialized = true
+                (requireActivity() as? MainActivity)?.initializePreviewGenerator { url, bitmap ->
+                    onPreviewReady(url, bitmap)
+                }
+            }
 
             // 1. 加载电视直播频道
             val tvGroups = TvDataManager.fetchTvChannels(requireContext())
             tvGroups.forEach { (category, channels) ->
                 val listRowAdapter = ArrayObjectAdapter(cardPresenter)
                 channels.forEach { listRowAdapter.add(it) }
-                val header = HeaderItem(rowsAdapter.size().toLong(), category)
-                rowsAdapter.add(ListRow(header, listRowAdapter))
+                val header = HeaderItem(adapter.size().toLong(), category)
+                adapter.add(ListRow(header, listRowAdapter))
             }
 
             // 2. 加载原有的示例电影数据 (可选，放在直播后面)
@@ -121,20 +172,21 @@ class MainFragment : BrowseSupportFragment() {
                 for (j in 0 until NUM_COLS) {
                     movieRowAdapter.add(list[j % 5])
                 }
-                val header = HeaderItem(rowsAdapter.size().toLong(), "经典点播")
-                rowsAdapter.add(ListRow(header, movieRowAdapter))
+                val header = HeaderItem(adapter.size().toLong(), "经典点播")
+                adapter.add(ListRow(header, movieRowAdapter))
             }
 
             // 3. 设置界面选项
-            val gridHeader = HeaderItem(rowsAdapter.size().toLong(), "设置")
+            val gridHeader = HeaderItem(adapter.size().toLong(), "设置")
             val mGridPresenter = GridItemPresenter()
             val gridRowAdapter = ArrayObjectAdapter(mGridPresenter)
             gridRowAdapter.add(resources.getString(R.string.grid_view))
             gridRowAdapter.add(getString(R.string.error_fragment))
             gridRowAdapter.add(resources.getString(R.string.personal_settings))
-            rowsAdapter.add(ListRow(gridHeader, gridRowAdapter))
+            adapter.add(ListRow(gridHeader, gridRowAdapter))
 
-            adapter = rowsAdapter
+            this@MainFragment.rowsAdapter = adapter
+            this@MainFragment.adapter = adapter
         }
     }
 
@@ -152,6 +204,88 @@ class MainFragment : BrowseSupportFragment() {
         onItemViewSelectedListener = ItemViewSelectedListener()
     }
 
+    /**
+     * 预览完成回调
+     */
+    private fun onPreviewReady(videoUrl: String, bitmap: Bitmap) {
+        Log.d(TAG.d, "Preview ready: $videoUrl")
+        // 刷新可见项的视图
+        rowsAdapter?.let { adapter ->
+            for (i in 0 until adapter.size()) {
+                val row = adapter.get(i) as? Row ?: continue
+                val listRow = row as? ListRow ?: continue
+                val rowAdapter = listRow.adapter
+                for (j in 0 until rowAdapter.size()) {
+                    val item = rowAdapter.get(j)
+                    if (item is Movie && item.videoUrl == videoUrl) {
+                        // 通知刷新对应项
+                        rowAdapter.notifyItemRangeChanged(j, 1)
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 调度预览请求
+     * 使用防抖机制避免频繁调用
+     */
+    private fun schedulePreviewRequests() {
+        // 移除之前的调度
+        previewScheduleRunnable?.let { mHandler.removeCallbacks(it) }
+
+        previewScheduleRunnable = Runnable {
+            updateVisibleItems()
+        }
+
+        mHandler.postDelayed(previewScheduleRunnable!!, PREVIEW_DEBOUNCE_MS)
+    }
+
+    /**
+     * 更新可见项的预览请求
+     */
+    private fun updateVisibleItems() {
+        val adapter = rowsAdapter ?: return
+
+        // 清空当前预览队列
+        PreviewGenerator.clearQueue()
+
+        // 获取当前可见的行和列
+        val selectedPosition = selectedPosition
+        if (selectedPosition < 0) return
+
+        val selectedRow = adapter.get(selectedPosition) as? Row ?: return
+        val listRow = selectedRow as? ListRow ?: return
+        val rowAdapter = listRow.adapter
+
+        // 为可见项添加预览请求
+        for (i in 0 until rowAdapter.size()) {
+            val item = rowAdapter.get(i)
+            if (item is Movie && item.videoUrl != null) {
+                // 可见项优先级最高 (0)，其他项优先级较低 (1)
+                val priority = 0
+                PreviewGenerator.requestPreview(item.videoUrl!!, priority, CARD_WIDTH, CARD_HEIGHT)
+            }
+        }
+
+        // 为相邻行的项添加预览请求（优先级较低）
+        val adjacentRows = listOfNotNull(
+            if (selectedPosition > 0) adapter.get(selectedPosition - 1) as? ListRow else null,
+            if (selectedPosition < adapter.size() - 1) adapter.get(selectedPosition + 1) as? ListRow else null
+        )
+
+        for (row in adjacentRows) {
+            val rowAdapter = row.adapter
+            for (i in 0 until rowAdapter.size()) {
+                val item = rowAdapter.get(i)
+                if (item is Movie && item.videoUrl != null) {
+                    PreviewGenerator.requestPreview(item.videoUrl!!, 1, CARD_WIDTH, CARD_HEIGHT)
+                }
+            }
+        }
+    }
+
     private inner class ItemViewClickedListener : OnItemViewClickedListener {
         override fun onItemClicked(
             itemViewHolder: Presenter.ViewHolder,
@@ -160,7 +294,7 @@ class MainFragment : BrowseSupportFragment() {
             row: Row
         ) {
             if (item is Movie) {
-                Log.d(TAG, "Item: " + item.toString())
+                Log.d(TAG.d, "Item: " + item.toString())
                 val intent = if (item.studio == "直播频道") {
                     Intent(requireActivity(), PlaybackActivity::class.java)
                 } else {
@@ -205,6 +339,8 @@ class MainFragment : BrowseSupportFragment() {
             if (item is Movie) {
                 mBackgroundUri = item.backgroundImageUrl
                 startBackgroundTimer()
+                // 触发预览调度
+                schedulePreviewRequests()
             }
         }
     }
@@ -259,9 +395,16 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     companion object {
-        private val TAG = "MainFragment"
+        private class TAG {
+            companion object {
+                const val d = "MainFragment"
+            }
+        }
+
         private const val BACKGROUND_UPDATE_DELAY = 300
         private const val GRID_ITEM_WIDTH = 200
         private const val GRID_ITEM_HEIGHT = 200
+        private const val CARD_WIDTH = 313
+        private const val CARD_HEIGHT = 176
     }
 }

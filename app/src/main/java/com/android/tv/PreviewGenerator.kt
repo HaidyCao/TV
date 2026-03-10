@@ -62,6 +62,7 @@ object PreviewGenerator {
      * @param onPreviewReady 预览完成回调
      */
     fun init(container: FrameLayout, onPreviewReady: (String, Bitmap) -> Unit) {
+        Log.d(TAG, "[INIT] PreviewGenerator.init called, cache size=${previewCache.size()}")
         this.onPreviewReady = onPreviewReady
         this.hiddenContainer = container
 
@@ -84,7 +85,7 @@ object PreviewGenerator {
     fun requestPreview(videoUrl: String, priority: Int, width: Int, height: Int) {
         // 检查是否已缓存
         if (previewCache.get(videoUrl) != null) {
-            Log.d(TAG, "[CACHE] Preview already cached: $videoUrl")
+            Log.d(TAG, "[CACHE] Preview already cached: $videoUrl, cache size=${previewCache.size()}")
             return
         }
 
@@ -106,7 +107,7 @@ object PreviewGenerator {
             height = height
         )
 
-        Log.d(TAG, "[QUEUE] Added request: $videoUrl (priority=$priority)")
+        Log.d(TAG, "[QUEUE] Added request: $videoUrl (priority=$priority), cache size=${previewCache.size()}")
         requestQueue.offer(request)
     }
 
@@ -150,7 +151,7 @@ object PreviewGenerator {
      * 只清空预览请求队列，保留预览缓存
      */
     fun clearQueue() {
-        Log.d(TAG, "[CLEAR] Clearing preview request queue")
+        Log.d(TAG, "[CLEAR] Clearing preview request queue, cache size=${previewCache.size()}")
         requestQueue.clear()
         activeTasks.values.forEach { it.cancel() }
         activeTasks.clear()
@@ -160,7 +161,7 @@ object PreviewGenerator {
      * 清空所有请求和缓存
      */
     fun clearAll() {
-        Log.d(TAG, "[CLEAR] Clearing all requests and cache")
+        Log.d(TAG, "[CLEAR] Clearing all requests and cache, cache size=${previewCache.size()}")
         clearQueue()
         previewCache.evictAll()
     }

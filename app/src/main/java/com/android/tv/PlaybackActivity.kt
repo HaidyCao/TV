@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -19,9 +20,13 @@ class PlaybackActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        supportActionBar?.hide()
         setContentView(R.layout.activity_playback)
 
         val playerView = findViewById<PlayerView>(R.id.player_view)
+        player?.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+
+        val intent = intent
 
         val movie = intent.extras?.getSerializable(DetailsActivity.MOVIE) as? Movie
         val videoUrl = movie?.videoUrl

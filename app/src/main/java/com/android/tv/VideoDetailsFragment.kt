@@ -145,6 +145,8 @@ class VideoDetailsFragment : DetailsSupportFragment() {
         detailsPresenter.backgroundColor =
             ContextCompat.getColor(requireActivity(), R.color.selected_background)
 
+        detailsPresenter.setHeaderPresenter(null)
+
         // Hook up transition element.
         val sharedElementHelper = FullWidthDetailsOverviewSharedElementHelper()
         sharedElementHelper.setSharedElementEnterTransition(

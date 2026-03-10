@@ -1,9 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/main_browse_fragment"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     tools:context=".MainActivity"
-    tools:deviceIds="tv"
-    tools:ignore="MergeRootFrame" />
+    tools:deviceIds="tv">
+
+    <FrameLayout
+        android:id="@+id/main_browse_fragment"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        tools:ignore="MergeRootFrame" />
+
+    <!-- 隐藏容器，用于 PreviewGenerator 创建 TextureView -->
+    <!-- 注意：不能使用 GONE 或 INVISIBLE，否则 Surface 不会被创建 -->
+    <!-- 使用透明度和大负值 translation 将容器移出屏幕 -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="313dp"
+        android:layout_height="176dp"
+        android:alpha="0"
+        android:translationX="-10000dp"
+        android:translationY="-10000dp"
+        android:importantForAccessibility="no"
+        />
+
+</FrameLayout>
