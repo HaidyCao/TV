@@ -3,6 +3,7 @@ package com.android.tv
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -22,6 +23,7 @@ class PlaybackActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         setContentView(R.layout.activity_playback)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val playerView = findViewById<PlayerView>(R.id.player_view)
         player?.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT

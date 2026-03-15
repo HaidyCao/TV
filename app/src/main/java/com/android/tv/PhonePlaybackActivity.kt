@@ -3,6 +3,7 @@ package com.android.tv
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
@@ -46,6 +47,7 @@ class PhonePlaybackActivity : AppCompatActivity() {
             )
         }
         setContentView(playerView)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     private fun initializePlayer() {
