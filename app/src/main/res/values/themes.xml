@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.TV" parent="@style/Theme.Leanback" />
-    
+
     <style name="Theme.TV.Playback" parent="Theme.AppCompat">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
-    
+
     <style name="Theme.TV.Phone" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">#FF6200EE</item>
         <item name="colorPrimaryDark">#FF3700B3</item>
@@ -15,4 +15,9 @@
     <style name="Theme.TV.Phone.Dark" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+    <style name="Theme.TV.Splash" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+
 </resources>

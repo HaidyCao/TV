@@ -165,18 +165,7 @@ class MainFragment : BrowseSupportFragment() {
                 adapter.add(ListRow(header, listRowAdapter))
             }
 
-            // 2. 加载原有的示例电影数据 (可选，放在直播后面)
-            val list = MovieList.list
-            if (list.isNotEmpty()) {
-                val movieRowAdapter = ArrayObjectAdapter(cardPresenter)
-                for (j in 0 until NUM_COLS) {
-                    movieRowAdapter.add(list[j % 5])
-                }
-                val header = HeaderItem(adapter.size().toLong(), "经典点播")
-                adapter.add(ListRow(header, movieRowAdapter))
-            }
-
-            // 3. 设置界面选项
+            // 2. 设置界面选项
             val gridHeader = HeaderItem(adapter.size().toLong(), "设置")
             val mGridPresenter = GridItemPresenter()
             val gridRowAdapter = ArrayObjectAdapter(mGridPresenter)

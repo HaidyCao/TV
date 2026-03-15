@@ -41,6 +41,7 @@ object PreviewGenerator {
     // 优先级队列，处理预览请求
     private val requestQueue = PriorityBlockingQueue<PreviewRequest>()
 
+    private val activeTasksLock = Any() // Lock object for activeTasks
     // 当前正在处理的任务
     private val activeTasks = mutableMapOf<Int, PreviewWorker>()
 
@@ -91,7 +92,7 @@ object PreviewGenerator {
 
         // 检查是否已在队列或正在处理
         val isQueued = requestQueue.any { it.videoUrl == videoUrl }
-        val isActive = activeTasks.values.any { it.request.videoUrl == videoUrl }
+        val isActive = synchronized(activeTasksLock) { activeTasks.values.any { it.request.videoUrl == videoUrl } }
 
         if (isQueued || isActive) {
             // 已存在，尝试更新优先级
@@ -127,10 +128,12 @@ object PreviewGenerator {
         }
 
         // 查找并更新活跃任务
-        val activeTask = activeTasks.values.find { it.request.videoUrl == videoUrl }
-        if (activeTask != null) {
-            activeTask.request.priority = newPriority
-            Log.d(TAG, "[PRIORITY] Updated active: $videoUrl -> $newPriority")
+        synchronized(activeTasksLock) {
+            val activeTask = activeTasks.values.find { it.request.videoUrl == videoUrl }
+            if (activeTask != null) {
+                activeTask.request.priority = newPriority
+                Log.d(TAG, "[PRIORITY] Updated active: $videoUrl -> $newPriority")
+            }
         }
     }
 
@@ -142,8 +145,10 @@ object PreviewGenerator {
         requestQueue.removeIf { it.videoUrl == videoUrl }
 
         // 取消活跃任务
-        val task = activeTasks.values.find { it.request.videoUrl == videoUrl }
-        task?.cancel()
+        synchronized(activeTasksLock) {
+            val task = activeTasks.values.find { it.request.videoUrl == videoUrl }
+            task?.cancel()
+        }
         Log.d(TAG, "[CANCEL] Request cancelled: $videoUrl")
     }
 
@@ -153,8 +158,10 @@ object PreviewGenerator {
     fun clearQueue() {
         Log.d(TAG, "[CLEAR] Clearing preview request queue, cache size=${previewCache.size()}")
         requestQueue.clear()
-        activeTasks.values.forEach { it.cancel() }
-        activeTasks.clear()
+        synchronized(activeTasksLock) {
+            activeTasks.values.forEach { it.cancel() }
+            activeTasks.clear()
+        }
     }
 
     /**
@@ -211,13 +218,17 @@ object PreviewGenerator {
         }
 
         val worker = PreviewWorker(request, container, onPreviewReady)
-        activeTasks[request.id] = worker
+        synchronized(activeTasksLock) {
+            activeTasks[request.id] = worker
+        }
 
         scope.launch {
             try {
                 worker.generate()
             } finally {
-                activeTasks.remove(request.id)
+                synchronized(activeTasksLock) {
+                    activeTasks.remove(request.id)
+                }
                 semaphore.release()
                 Log.d(TAG, "[PROCESS] Completed: ${request.videoUrl}, semaphore permits=${semaphore.availablePermits()}")
             }
