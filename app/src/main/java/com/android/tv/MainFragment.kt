@@ -1,6 +1,5 @@
 package com.android.tv
 
-import java.util.Collections
 import java.util.Timer
 import java.util.TimerTask
 
@@ -19,7 +18,6 @@ import androidx.leanback.widget.ListRow
 import androidx.leanback.widget.ListRowPresenter
 import androidx.leanback.widget.OnItemViewClickedListener
 import androidx.leanback.widget.OnItemViewSelectedListener
-import androidx.leanback.widget.ObjectAdapter
 import androidx.leanback.widget.Presenter
 import androidx.leanback.widget.Row
 import androidx.leanback.widget.RowPresenter
@@ -32,13 +30,11 @@ import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
 import android.view.WindowMetrics
-import android.view.WindowInsets
 import androidx.media3.common.util.UnstableApi
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
 import androidx.lifecycle.lifecycleScope
-import androidx.fragment.app.Fragment
 import kotlinx.coroutines.launch
 import android.graphics.Bitmap
 
@@ -208,6 +204,7 @@ class MainFragment : BrowseSupportFragment() {
                     val item = rowAdapter.get(j)
                     if (item is Movie && item.videoUrl == videoUrl) {
                         // 通知刷新对应项
+                        Log.d(TAG.d, "notifyItemChanged: ${item.title}")
                         rowAdapter.notifyItemRangeChanged(j, 1)
                         break
                     }
@@ -220,12 +217,12 @@ class MainFragment : BrowseSupportFragment() {
      * 调度预览请求
      * 使用防抖机制避免频繁调用
      */
-    private fun schedulePreviewRequests() {
+    private fun schedulePreviewRequests(item: Movie) {
         // 移除之前的调度
         previewScheduleRunnable?.let { mHandler.removeCallbacks(it) }
 
         previewScheduleRunnable = Runnable {
-            updateVisibleItems()
+            updateVisibleItems(item)
         }
 
         mHandler.postDelayed(previewScheduleRunnable!!, PREVIEW_DEBOUNCE_MS)
@@ -234,7 +231,7 @@ class MainFragment : BrowseSupportFragment() {
     /**
      * 更新可见项的预览请求
      */
-    private fun updateVisibleItems() {
+    private fun updateVisibleItems(item: Movie) {
         val adapter = rowsAdapter ?: return
 
         // 清空当前预览队列
@@ -248,29 +245,38 @@ class MainFragment : BrowseSupportFragment() {
         val listRow = selectedRow as? ListRow ?: return
         val rowAdapter = listRow.adapter
 
-        // 为可见项添加预览请求
+        Log.d(TAG.d, "requestPreview: ${item.title}")
+        PreviewGenerator.requestPreview(item.title!!,item.videoUrl!!, 0, CARD_WIDTH, CARD_HEIGHT)
+
+        var pos = -1;
         for (i in 0 until rowAdapter.size()) {
-            val item = rowAdapter.get(i)
-            if (item is Movie && item.videoUrl != null) {
-                // 可见项优先级最高 (0)，其他项优先级较低 (1)
-                val priority = 0
-                PreviewGenerator.requestPreview(item.videoUrl!!, priority, CARD_WIDTH, CARD_HEIGHT)
+            val v = rowAdapter.get(i)
+            if (v is Movie && v == item) {
+                pos = i
+                break
             }
         }
 
-        // 为相邻行的项添加预览请求（优先级较低）
-        val adjacentRows = listOfNotNull(
-            if (selectedPosition > 0) adapter.get(selectedPosition - 1) as? ListRow else null,
-            if (selectedPosition < adapter.size() - 1) adapter.get(selectedPosition + 1) as? ListRow else null
-        )
+        if (pos == -1) {
+            Log.d(TAG.d, "Item not found in adapter")
+            return
+        }
 
-        for (row in adjacentRows) {
-            val rowAdapter = row.adapter
-            for (i in 0 until rowAdapter.size()) {
-                val item = rowAdapter.get(i)
-                if (item is Movie && item.videoUrl != null) {
-                    PreviewGenerator.requestPreview(item.videoUrl!!, 1, CARD_WIDTH, CARD_HEIGHT)
-                }
+        // 相邻的位置的优先级依次降低
+        for (i in (pos - 1) downTo 0) {
+            Log.d(TAG.d, "pos: $pos, i: $i")
+            val v = rowAdapter.get(i)
+            if (v is Movie) {
+                Log.d(TAG.d, "requestPreview: ${v.title}")
+                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, pos - i, CARD_WIDTH, CARD_HEIGHT)
+            }
+        }
+
+        for (i in (pos + 1) until rowAdapter.size()) {
+            val v = rowAdapter.get(i)
+            if (v is Movie) {
+                Log.d(TAG.d, "requestPreview: ${v.title}")
+                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, i - pos, CARD_WIDTH, CARD_HEIGHT)
             }
         }
     }
@@ -325,11 +331,12 @@ class MainFragment : BrowseSupportFragment() {
             itemViewHolder: Presenter.ViewHolder?, item: Any?,
             rowViewHolder: RowPresenter.ViewHolder, row: Row
         ) {
+            Log.d(TAG.d, "Selected: " + item)
             if (item is Movie) {
                 mBackgroundUri = item.backgroundImageUrl
                 startBackgroundTimer()
                 // 触发预览调度
-                schedulePreviewRequests()
+                schedulePreviewRequests(item)
             }
         }
     }

@@ -60,19 +60,23 @@ class MainActivity : FragmentActivity() {
     fun initializePreviewGenerator(onPreviewReady: (String, android.graphics.Bitmap) -> Unit) {
         if (previewContainer == null) {
             previewContainer = findViewById(R.id.preview_container)
-            // 确保容器已附加到窗口
-            previewContainer?.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-                override fun onViewAttachedToWindow(v: View) {
-                    PreviewGenerator.init(previewContainer!!, onPreviewReady)
-                }
-
-                override fun onViewDetachedFromWindow(v: View) {
-                    // 处理窗口分离
-                }
-            })
             // 如果已经附加，直接初始化
             if (previewContainer?.isAttachedToWindow == true) {
+                Log.d("MainActivity", "Preview container already attached, initializing...")
                 PreviewGenerator.init(previewContainer!!, onPreviewReady)
+            } else {
+                Log.d("MainActivity", "Preview container not attached, waiting...")
+                // 确保容器已附加到窗口
+                previewContainer?.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(v: View) {
+                        Log.d("MainActivity", "Preview container attached, initializing...")
+                        PreviewGenerator.init(previewContainer!!, onPreviewReady)
+                    }
+
+                    override fun onViewDetachedFromWindow(v: View) {
+                        // 处理窗口分离
+                    }
+                })
             }
         }
     }

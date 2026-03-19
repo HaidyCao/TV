@@ -12,6 +12,9 @@ import android.widget.TextView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.android.tv.PreviewGenerator.PRIORITY_CURRENT_SCREEN
+import com.android.tv.PreviewGenerator.PRIORITY_NEXT_SCREEN
+import com.android.tv.PreviewGenerator.PRIORITY_PREV_SCREEN
 import com.bumptech.glide.Glide
 
 /**
@@ -29,7 +32,10 @@ class PhoneChannelAdapter(
 
     // 隐藏容器，用于预览生成（必须附加到窗口才能创建 Surface）
     private val hiddenContainer by lazy {
-        FrameLayout(recyclerView?.context?.applicationContext ?: throw IllegalStateException("Context not set")).apply {
+        FrameLayout(
+            recyclerView?.context?.applicationContext
+                ?: throw IllegalStateException("Context not set")
+        ).apply {
             layoutParams = ViewGroup.LayoutParams(1, 1)
             // 不能使用 GONE，否则 Surface 不会被创建
             // 使用透明度和极小尺寸
@@ -41,9 +47,7 @@ class PhoneChannelAdapter(
 
     companion object {
         private const val TAG = "PhoneChannelAdapter"
-        private const val PRIORITY_CURRENT_SCREEN = 0 // 当前屏幕显示的项优先级（最高）
-        private const val PRIORITY_PREV_SCREEN = 100 // 上一屏的项优先级
-        private const val PRIORITY_NEXT_SCREEN = 150 // 下一屏的项优先级
+
         // 更远的项不加载预览
         private const val PAYLOAD_PREVIEW_READY = "preview_ready"
     }
@@ -56,7 +60,10 @@ class PhoneChannelAdapter(
         val parent = recyclerView.parent as? ViewGroup
         if (parent != null && hiddenContainer.parent == null) {
             parent.addView(hiddenContainer, 0)
-            Log.d(TAG, "[LIFECYCLE] Hidden container added to parent, isAttached=${hiddenContainer.isAttachedToWindow}")
+            Log.d(
+                TAG,
+                "[LIFECYCLE] Hidden container added to parent, isAttached=${hiddenContainer.isAttachedToWindow}"
+            )
         }
 
         // 初始化预览生成器
@@ -166,9 +173,11 @@ class PhoneChannelAdapter(
         val firstFar = (lastNextScreen + 1).coerceAtMost(itemCount - 1)
         val lastFar = itemCount - 1
 
-        Log.d(TAG, "[SCHEDULE] Total=$itemCount, Visible=$firstVisible-$lastVisible, " +
-                "PrevScreen=$firstPrevScreen-$lastPrevScreen, " +
-                "NextScreen=$firstNextScreen-$lastNextScreen")
+        Log.d(
+            TAG, "[SCHEDULE] Total=$itemCount, Visible=$firstVisible-$lastVisible, " +
+                    "PrevScreen=$firstPrevScreen-$lastPrevScreen, " +
+                    "NextScreen=$firstNextScreen-$lastNextScreen"
+        )
 
         // 为每个 item 调度预览，使用 Map 来跟踪已处理的 videoUrl
         val processedVideoUrls = mutableMapOf<String, Int>() // videoUrl -> priority
@@ -176,6 +185,7 @@ class PhoneChannelAdapter(
         for (position in 0 until itemCount) {
             val movie = currentList[position]
             val videoUrl = movie.videoUrl ?: continue
+            val title = movie.title ?: continue
 
             // 只加载当前屏和上下一屏的预览，更远的不加载
             val isInRange = position in firstPrevScreen..lastNextScreen
@@ -197,13 +207,16 @@ class PhoneChannelAdapter(
                 // 如果已存在，只更新更高优先级的请求
                 if (priority < processedVideoUrls[videoUrl]!!) {
                     processedVideoUrls[videoUrl] = priority
-                    PreviewGenerator.requestPreview(videoUrl, priority, 1080, 608)
-                    Log.d(TAG, "[SCHEDULE] Updating priority for existing URL: $videoUrl -> $priority")
+                    PreviewGenerator.requestPreview(title, videoUrl, priority, 1080, 608)
+                    Log.d(
+                        TAG,
+                        "[SCHEDULE] Updating priority for existing URL: $videoUrl -> $priority"
+                    )
                 }
             } else {
                 // 新 URL，添加到处理过的列表中
                 processedVideoUrls[videoUrl] = priority
-                PreviewGenerator.requestPreview(videoUrl, priority, 1080, 608)
+                PreviewGenerator.requestPreview(title, videoUrl, priority, 1080, 608)
                 Log.d(TAG, "[SCHEDULE] Adding new request: $videoUrl, priority=$priority")
             }
         }
