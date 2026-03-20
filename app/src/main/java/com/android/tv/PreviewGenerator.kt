@@ -11,11 +11,14 @@ import android.util.Log
 import android.util.LruCache
 import android.view.TextureView
 import android.widget.FrameLayout
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.ExoPlaybackException
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.android.tv.util.isTelevision
 import kotlinx.coroutines.*
 import java.util.Collections
@@ -30,7 +33,6 @@ import java.util.concurrent.Semaphore
  * 使用优先级队列处理预览请求，优先处理可见项
  */
 @SuppressLint("StaticFieldLeak")
-@UnstableApi
 object PreviewGenerator {
 
     public const val PRIORITY_CURRENT_SCREEN_SELECTED = 0 // 当前屏幕显示的项优先级（最高）
@@ -40,11 +42,11 @@ object PreviewGenerator {
 
 
     const val TAG = "PreviewGenerator"
-    private const val MAX_CONCURRENT_NON_TV = 3
-    private const val MAX_CONCURRENT_TV = 1
+    private const val MAX_CONCURRENT_NON_TV = 5
+    private const val MAX_CONCURRENT_TV = 3
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val executor: ExecutorService = Executors.newFixedThreadPool(3)
+    private var executor: ExecutorService? = null
 
     // 预览缓存，视频URL -> 预览图片
     val previewCache: LruCache<String, Bitmap> = LruCache(calculateCacheSize())
@@ -60,9 +62,6 @@ object PreviewGenerator {
 
     // 预览完成回调
     private var onPreviewReady: ((String, Bitmap) -> Unit)? = null
-
-    // 渲染器工厂（复用），供 PreviewWorker 访问
-    internal var renderersFactory: DefaultRenderersFactory? = null
 
     // 隐藏的父容器（用于创建 TextureView）
     private var hiddenContainer: FrameLayout? = null
@@ -80,15 +79,13 @@ object PreviewGenerator {
             TAG,
             "[INIT] PreviewGenerator.init called, cache size=${previewCache.size()}, maxConcurrent=$maxConcurrent"
         )
+        
+        if (executor == null) {
+            executor = Executors.newFixedThreadPool(maxConcurrent)
+        }
+        
         this.onPreviewReady = onPreviewReady
         this.hiddenContainer = container
-
-        // 初始化渲染器工厂
-        if (renderersFactory == null) {
-            renderersFactory = DefaultRenderersFactory(context)
-                .setEnableDecoderFallback(true)
-                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-        }
 
         // 启动请求处理协程
         startRequestProcessor()
@@ -177,7 +174,7 @@ object PreviewGenerator {
      */
     fun clearQueue() {
         Log.d(TAG, "[CLEAR] Clearing preview request queue, cache size=${previewCache.size()}")
-        requestQueue.clear();
+        requestQueue.clear()
     }
 
     /**
@@ -205,10 +202,9 @@ object PreviewGenerator {
     private fun startRequestProcessor() {
         scope.launch {
             while (isActive) {
-                // 从队列取出请求 (不再先获取信号量)
+                // 从队列取出请求
                 val request = requestQueue.take() // 使用 take() 阻塞等待，直到有请求可用
-                executor.execute { processRequest(request) }
-//                processRequest(request)
+                executor?.execute { processRequest(request) }
             }
         }
     }
@@ -224,10 +220,9 @@ object PreviewGenerator {
                 return
             }
 
-            // 在协程开始时获取信号量
             Log.d(
                 TAG,
-                "[PROCESS] Acquired semaphore, processing: ${request.videoUrl}, title: ${request.videoName}}"
+                "[PROCESS] Acquired semaphore, processing: ${request.videoUrl}, title: ${request.videoName}"
             )
 
             val container = hiddenContainer ?: run {
@@ -265,7 +260,8 @@ object PreviewGenerator {
         Log.d(TAG, "[DESTROY] Destroying PreviewGenerator")
         scope.cancel()
         clearAll()
-        renderersFactory = null
+        executor?.shutdownNow()
+        executor = null
         hiddenContainer = null
         onPreviewReady = null
     }
@@ -302,12 +298,11 @@ private class PreviewWorker(
     private var textureView: TextureView? = null
     private var player: ExoPlayer? = null
     private var isCancelled = false
-    private var captureJob: Job? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * 生成预览
-     * 这个 suspend 函数会在整个预览任务完成后才返回
+     * 这个函数会在整个预览任务完成后才返回
      */
     fun generate() {
         if (isCancelled) return
@@ -315,11 +310,14 @@ private class PreviewWorker(
         val countDownLatch = CountDownLatch(1)
         mainHandler.post {
             if (PreviewGenerator.previewCache.get(request.videoUrl) != null) {
-                Log.d(PreviewGenerator.TAG, "processRequest: [CACHE] Preview already cached: ${request.videoUrl}}")
+                Log.d(PreviewGenerator.TAG, "processRequest: [CACHE] Preview already cached: ${request.videoUrl}")
+                cleanup()
+                countDownLatch.countDown()
                 return@post
             }
 
             if (isCancelled) {
+                cleanup()
                 countDownLatch.countDown()
                 return@post
             }
@@ -349,7 +347,7 @@ private class PreviewWorker(
 
                         override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
                             Log.d(TAG, "[SURFACE] Destroyed")
-                            releasePlayer()
+                            cleanup()
                             return true
                         }
 
@@ -370,6 +368,7 @@ private class PreviewWorker(
         // 等待任务完成（成功或失败）或被取消
         try {
             countDownLatch.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            mainHandler.post { cleanup() }
             SystemClock.sleep(100)
         } catch (e: Exception) {
             Log.e(TAG, "[ERROR] Generation interrupted", e)
@@ -381,6 +380,7 @@ private class PreviewWorker(
      */
     private fun startPlayback(countDownLatch: CountDownLatch) {
         if (isCancelled) {
+            cleanup()
             countDownLatch.countDown()
             return
         }
@@ -391,19 +391,37 @@ private class PreviewWorker(
         Log.d(TAG, "[PLAYBACK] Starting: $videoUrl")
 
         try {
-            val factory = PreviewGenerator.renderersFactory ?: run {
-                Log.e(TAG, "[ERROR] Renderers factory not available")
-                cleanup()
-                countDownLatch.countDown()
-                return
-            }
+            val factory = DefaultRenderersFactory(container.context.applicationContext)
+                .setEnableDecoderFallback(true)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF) // 禁用扩展渲染器，省内存
+
+            // 限制缓冲大小，对于预览只需极小缓冲
+            val loadControl = DefaultLoadControl.Builder()
+//                .setBufferDurationsMs(
+//                    1000, // minBufferMs
+//                    2000, // maxBufferMs
+//                    500,  // bufferForPlaybackMs
+//                    500   // bufferForPlaybackAfterRebufferMs
+//                )
+                .build()
 
             val newPlayer = ExoPlayer.Builder(container.context.applicationContext, factory)
+                .setLoadControl(loadControl)
                 .setLooper(Looper.getMainLooper())
                 .build().apply {
                     volume = 0f
                     playWhenReady = true
                 }
+
+            val trackSelector = newPlayer.trackSelector as DefaultTrackSelector
+
+            val parameters = trackSelector.buildUponParameters()
+                .setMaxVideoSize(640, 360) // 预览不需要高清，360P 足够
+                .setForceLowestBitrate(true) // 强制最低码率
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                .build()
+
+            trackSelector.parameters = parameters
 
             player = newPlayer
             newPlayer.setVideoTextureView(texture)
@@ -414,19 +432,20 @@ private class PreviewWorker(
 
                 override fun onPlaybackStateChanged(state: Int) {
                     if (isCancelled || newPlayer.isReleased) {
+                        cleanup()
                         countDownLatch.countDown()
                         return
                     }
 
-                    // 当播放器状态变为 ready 时直接捕获首帧，无需等待 150ms
+                    // 当播放器状态变为 ready 时直接捕获首帧
                     if (state == androidx.media3.common.Player.STATE_READY && !captureScheduled) {
                         captureScheduled = true
                         Log.d(TAG, "[PLAYBACK] Player ready, capturing first frame")
                         captureFrame(countDownLatch)
                     } else if (state == androidx.media3.common.Player.STATE_IDLE && newPlayer.playerError != null) {
                         val error = newPlayer.playerError
-                        // 遇到 Source Error (通常是无法识别的输入格式) 就将其标记为不可用
-                        if (error is androidx.media3.exoplayer.ExoPlaybackException && error.type == androidx.media3.exoplayer.ExoPlaybackException.TYPE_SOURCE) {
+                        // 遇到 Source Error 就将其标记为不可用
+                        if (error is ExoPlaybackException && error.type == ExoPlaybackException.TYPE_SOURCE) {
                             Log.e(TAG, "[PLAYBACK] Source error detected for ${request.videoUrl}, marking as failed")
                             PreviewGenerator.markAsFailed(request.videoUrl)
                         }
@@ -491,12 +510,10 @@ private class PreviewWorker(
                         onPreviewReady?.invoke(request.videoUrl, bitmap)
                     }
                 }
-
-                cleanup()
             } else {
                 Log.w(TAG, "[CAPTURE] Failed: bitmap is null")
-                cleanup()
             }
+            cleanup()
         } catch (e: Exception) {
             Log.e(TAG, "[ERROR] Failed to capture frame", e)
             cleanup()
@@ -527,9 +544,6 @@ private class PreviewWorker(
     private fun cleanup() {
         Log.d(TAG, "[CLEANUP] Cleaning up")
 
-        captureJob?.cancel()
-        captureJob = null
-
         textureView?.let {
             it.surfaceTextureListener = null
             container.removeView(it)
@@ -550,4 +564,3 @@ private class PreviewWorker(
         }
     }
 }
-

@@ -37,6 +37,10 @@ import com.bumptech.glide.request.transition.Transition
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import android.graphics.Bitmap
+import androidx.leanback.app.RowsSupportFragment
+import androidx.leanback.widget.VerticalGridView
+import androidx.leanback.widget.HorizontalGridView
+import androidx.recyclerview.widget.RecyclerView
 
 /**
  * Loads a grid of cards with movies to browse.
@@ -218,19 +222,13 @@ class MainFragment : BrowseSupportFragment() {
      * 使用防抖机制避免频繁调用
      */
     private fun schedulePreviewRequests(item: Movie) {
-        // 移除之前的调度
         previewScheduleRunnable?.let { mHandler.removeCallbacks(it) }
-
         previewScheduleRunnable = Runnable {
             updateVisibleItems(item)
         }
-
         mHandler.postDelayed(previewScheduleRunnable!!, PREVIEW_DEBOUNCE_MS)
     }
 
-    /**
-     * 更新可见项的预览请求
-     */
     private fun updateVisibleItems(item: Movie) {
         val adapter = rowsAdapter ?: return
 
@@ -248,35 +246,77 @@ class MainFragment : BrowseSupportFragment() {
         Log.d(TAG.d, "requestPreview: ${item.title}")
         PreviewGenerator.requestPreview(item.title!!,item.videoUrl!!, 0, CARD_WIDTH, CARD_HEIGHT)
 
-        var pos = -1;
-        for (i in 0 until rowAdapter.size()) {
-            val v = rowAdapter.get(i)
-            if (v is Movie && v == item) {
-                pos = i
-                break
+//        var pos = -1;
+//        for (i in 0 until rowAdapter.size()) {
+//            val v = rowAdapter.get(i)
+//            if (v is Movie && v == item) {
+//                pos = i
+//                break
+//            }
+//        }
+//
+//        if (pos == -1) {
+//            Log.d(TAG.d, "Item not found in adapter")
+//            return
+//        }
+//
+//        // 相邻的位置的优先级依次降低
+//        for (i in (pos - 1) downTo 0) {
+//            Log.d(TAG.d, "pos: $pos, i: $i")
+//            val v = rowAdapter.get(i)
+//            if (v is Movie) {
+//                Log.d(TAG.d, "requestPreview: ${v.title}")
+//                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, pos - i, CARD_WIDTH, CARD_HEIGHT)
+//            }
+//        }
+//
+//        for (i in (pos + 1) until rowAdapter.size()) {
+//            val v = rowAdapter.get(i)
+//            if (v is Movie) {
+//                Log.d(TAG.d, "requestPreview: ${v.title}")
+//                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, i - pos, CARD_WIDTH, CARD_HEIGHT)
+//            }
+//        }
+
+        val rowsFragment = rowsSupportFragment ?: return
+        val vGridView = rowsFragment.verticalGridView ?: return
+        // 1. 遍历当前屏幕上可见的“行”视图
+        for (i in 0 until vGridView.childCount) {
+            val rowView = vGridView.getChildAt(i)
+            val rowPos = vGridView.getChildAdapterPosition(rowView)
+            if (rowPos == -1) continue
+
+//            if (rowPos == selectedPosition) continue
+
+            val listRow = adapter.get(rowPos) as? ListRow ?: continue
+            val rowAdapter = listRow.adapter as? ArrayObjectAdapter ?: continue
+
+            val hGridView = rowView.findViewById<HorizontalGridView>(androidx.leanback.R.id.row_content) ?: return
+            val visiblePositions = ArrayList<Int>()
+
+            for (n in 0 until hGridView.childCount) {
+                val cardView = hGridView.getChildAt(n)
+                val cardPos = hGridView.getChildAdapterPosition(cardView)
+                if (cardPos == -1) continue
+
+                visiblePositions.add(cardPos)
             }
-        }
 
-        if (pos == -1) {
-            Log.d(TAG.d, "Item not found in adapter")
-            return
-        }
+            for (n in 0 until rowAdapter.size()) {
+                val v = rowAdapter.get(n)
+                if (v is Movie) {
+                    if (v == item) {
+                        continue
+                    }
 
-        // 相邻的位置的优先级依次降低
-        for (i in (pos - 1) downTo 0) {
-            Log.d(TAG.d, "pos: $pos, i: $i")
-            val v = rowAdapter.get(i)
-            if (v is Movie) {
-                Log.d(TAG.d, "requestPreview: ${v.title}")
-                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, pos - i, CARD_WIDTH, CARD_HEIGHT)
-            }
-        }
+                    Log.d(TAG.d, "requestPreview: ${v.title}")
+                    if (visiblePositions.contains(n)) {
+                        PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, 1, CARD_WIDTH, CARD_HEIGHT)
+                        continue
+                    }
 
-        for (i in (pos + 1) until rowAdapter.size()) {
-            val v = rowAdapter.get(i)
-            if (v is Movie) {
-                Log.d(TAG.d, "requestPreview: ${v.title}")
-                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, i - pos, CARD_WIDTH, CARD_HEIGHT)
+                    PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, rowPos * 100 + n, CARD_WIDTH, CARD_HEIGHT)
+                }
             }
         }
     }
