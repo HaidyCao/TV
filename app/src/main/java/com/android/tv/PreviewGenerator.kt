@@ -42,6 +42,7 @@ object PreviewGenerator {
 
 
     const val TAG = "PreviewGenerator"
+    private const val MAX_FAILURES = 3 // 最大失败次数
     private const val MAX_CONCURRENT_NON_TV = 5
     private const val MAX_CONCURRENT_TV = 3
 
@@ -51,8 +52,8 @@ object PreviewGenerator {
     // 预览缓存，视频URL -> 预览图片
     val previewCache: LruCache<String, Bitmap> = LruCache(calculateCacheSize())
 
-    // 失败的URL集合，缓存 Source error 的 URL，避免重复触发无效请求
-    private val failedUrls = Collections.synchronizedSet(mutableSetOf<String>())
+    // 记录失败次数，URL -> 失败次数
+    private val failureCounts = Collections.synchronizedMap(mutableMapOf<String, Int>())
 
     // 优先级队列，处理预览请求
     private val requestQueue = PriorityBlockingQueue<PreviewRequest>()
@@ -106,11 +107,12 @@ object PreviewGenerator {
             return
         }
 
-        // 检查是否已在失败缓存中
-        if (failedUrls.contains(videoUrl)) {
+        // 检查URL是否已达到最大失败次数
+        val failures = failureCounts[videoUrl] ?: 0
+        if (failures >= MAX_FAILURES) {
             Log.d(
                 TAG,
-                "[FAILED_CACHE] URL previously failed with Source error: $videoUrl"
+                "[FAILED_CACHE] URL has failed $failures times, skipping: $videoUrl"
             )
             return
         }
@@ -184,7 +186,7 @@ object PreviewGenerator {
         Log.d(TAG, "[CLEAR] Clearing all requests and cache, cache size=${previewCache.size()}")
         clearQueue()
         previewCache.evictAll()
-        failedUrls.clear()
+        failureCounts.clear()
     }
 
     fun getPreviewFromCache(url: String): Bitmap? {
@@ -192,12 +194,27 @@ object PreviewGenerator {
     }
 
     /**
-     * 将 URL 标记为失败（通常是因为遇到非法的视频格式/源错误）
+     * 检查一个URL是否已达到最大失败次数
      */
-    fun markAsFailed(videoUrl: String) {
-        if (failedUrls.add(videoUrl)) {
-            Log.d(TAG, "[FAILED] Marked as failed: $videoUrl")
-        }
+    fun isPermanentlyFailed(url: String): Boolean {
+        return (failureCounts[url] ?: 0) >= MAX_FAILURES
+    }
+
+    /**
+     * 清除特定URL的失败记录
+     */
+    fun clearFailureRecord(url: String) {
+        failureCounts.remove(url)
+        Log.d(TAG, "[FAILURE] Cleared failure record for $url")
+    }
+
+    /**
+     * 记录一次URL加载失败
+     */
+    fun recordFailure(videoUrl: String) {
+        val currentFailures = failureCounts[videoUrl] ?: 0
+        failureCounts[videoUrl] = currentFailures + 1
+        Log.d(TAG, "[FAILURE] Recorded failure for $videoUrl, count: ${currentFailures + 1}")
     }
 
     /**
@@ -218,8 +235,8 @@ object PreviewGenerator {
      */
     private fun processRequest(request: PreviewRequest) {
         try {
-            // 检查是否已缓存或已失败
-            if (previewCache.get(request.videoUrl) != null || failedUrls.contains(request.videoUrl)) {
+            // 检查是否已缓存或已达到最大失败次数
+            if (previewCache.get(request.videoUrl) != null || (failureCounts[request.videoUrl] ?: 0) >= MAX_FAILURES) {
                 Log.d(TAG, "processRequest: [CACHE/FAILED] Skipping: ${request.videoUrl}")
                 return
             }
@@ -450,8 +467,8 @@ private class PreviewWorker(
                         val error = newPlayer.playerError
                         // 遇到 Source Error 就将其标记为不可用
                         if (error is ExoPlaybackException && error.type == ExoPlaybackException.TYPE_SOURCE) {
-                            Log.e(TAG, "[PLAYBACK] Source error detected for ${request.videoUrl}, marking as failed")
-                            PreviewGenerator.markAsFailed(request.videoUrl)
+                            Log.e(TAG, "[PLAYBACK] Source error detected for ${request.videoUrl}, recording failure")
+                            PreviewGenerator.recordFailure(request.videoUrl)
                         }
 
                         Log.w(TAG, "[PLAYBACK] Error: $error")

@@ -171,6 +171,8 @@ class MainFragment : BrowseSupportFragment() {
             }
 
 
+
+
             // 2. 设置界面选项
             val gridHeader = HeaderItem(adapter.size().toLong(), "设置")
             val mGridPresenter = GridItemPresenter()
@@ -326,7 +328,7 @@ class MainFragment : BrowseSupportFragment() {
                         continue
                     }
 
-                    PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, rowPos * 100 + n, CARD_WIDTH, CARD_HEIGHT)
+//                    PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, rowPos * 100 + n, CARD_WIDTH, CARD_HEIGHT)
                 }
             }
         }
@@ -385,6 +387,12 @@ class MainFragment : BrowseSupportFragment() {
             Log.d(TAG.d, "Selected: " + item)
             if (item is Movie) {
                 mSelectedItem = item
+
+                // 如果该项之前已失败多次，用户的主动选择将给予它新的机会
+                if (PreviewGenerator.isPermanentlyFailed(item.videoUrl!!)) {
+                    PreviewGenerator.clearFailureRecord(item.videoUrl!!)
+                }
+
                 val cachedBitmap = PreviewGenerator.getPreviewFromCache(item.videoUrl!!)
                 if (cachedBitmap != null) {
                     updateBackground(cachedBitmap)
