@@ -39,6 +39,7 @@ dependencies {
     implementation(libs.androidx.leanback)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.glide)
+    implementation(libs.glide.transformations)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.media3.exoplayer)

@@ -34,6 +34,9 @@ import androidx.media3.common.util.UnstableApi
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
+import com.bumptech.glide.load.engine.DiskCacheStrategy
+import com.bumptech.glide.request.RequestOptions
+import jp.wasabeef.glide.transformations.GrayscaleTransformation
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import android.graphics.Bitmap
@@ -41,6 +44,7 @@ import androidx.leanback.app.RowsSupportFragment
 import androidx.leanback.widget.VerticalGridView
 import androidx.leanback.widget.HorizontalGridView
 import androidx.recyclerview.widget.RecyclerView
+import jp.wasabeef.glide.transformations.BlurTransformation
 
 /**
  * Loads a grid of cards with movies to browse.
@@ -54,6 +58,7 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var mMetrics: DisplayMetrics
     private var mBackgroundTimer: Timer? = null
     private var mBackgroundUri: String? = null
+    private var mSelectedItem: Movie? = null
 
     // 行适配器，用于访问和更新数据
     private var rowsAdapter: ArrayObjectAdapter? = null
@@ -165,6 +170,7 @@ class MainFragment : BrowseSupportFragment() {
                 adapter.add(ListRow(header, listRowAdapter))
             }
 
+
             // 2. 设置界面选项
             val gridHeader = HeaderItem(adapter.size().toLong(), "设置")
             val mGridPresenter = GridItemPresenter()
@@ -197,8 +203,13 @@ class MainFragment : BrowseSupportFragment() {
      * 预览完成回调
      */
     private fun onPreviewReady(videoUrl: String, bitmap: Bitmap) {
-        Log.d(TAG.d, "Preview ready: $videoUrl")
-        // 刷新可见项的视图
+        Log.d(TAG.d, "Preview ready: $videoUrl, selected item is ${mSelectedItem?.videoUrl}")
+        // 只有当完成的预览是当前选中的项目时，才更新背景
+        if (mSelectedItem?.videoUrl == videoUrl) {
+            updateBackground(bitmap)
+        }
+
+        // 刷新可见项的视图以显示卡片预览图
         rowsAdapter?.let { adapter ->
             for (i in 0 until adapter.size()) {
                 val row = adapter.get(i) as? Row ?: continue
@@ -208,7 +219,7 @@ class MainFragment : BrowseSupportFragment() {
                     val item = rowAdapter.get(j)
                     if (item is Movie && item.videoUrl == videoUrl) {
                         // 通知刷新对应项
-                        Log.d(TAG.d, "notifyItemChanged: ${item.title}")
+                        Log.d(TAG.d, "notifyItemChanged for card preview: ${item.title}")
                         rowAdapter.notifyItemRangeChanged(j, 1)
                         break
                     }
@@ -373,21 +384,23 @@ class MainFragment : BrowseSupportFragment() {
         ) {
             Log.d(TAG.d, "Selected: " + item)
             if (item is Movie) {
-                mBackgroundUri = item.backgroundImageUrl
-                startBackgroundTimer()
-                // 触发预览调度
+                mSelectedItem = item
+                val cachedBitmap = PreviewGenerator.getPreviewFromCache(item.videoUrl!!)
+                if (cachedBitmap != null) {
+                    updateBackground(cachedBitmap)
+                }
+                // 无论如何都触发预览调度，以便在没有缓存时生成
                 schedulePreviewRequests(item)
             }
         }
     }
 
-    private fun updateBackground(uri: String?) {
+    private fun updateBackground(bitmap: Bitmap) {
         val width = mMetrics.widthPixels
         val height = mMetrics.heightPixels
         Glide.with(requireActivity())
-            .load(uri)
-            .centerCrop()
-            .error(mDefaultBackground)
+            .load(bitmap)
+            .apply(RequestOptions.bitmapTransform(jp.wasabeef.glide.transformations.BlurTransformation(8, 2)))
             .into(object : CustomTarget<Drawable>(width, height) {
                 override fun onResourceReady(resource: Drawable, transition: Transition<in Drawable>?) {
                     mBackgroundManager.drawable = resource
@@ -397,18 +410,9 @@ class MainFragment : BrowseSupportFragment() {
                     // Do nothing
                 }
             })
-        mBackgroundTimer?.cancel()
     }
 
-    private fun startBackgroundTimer() {
-        mBackgroundTimer?.cancel()
-        mBackgroundTimer = Timer()
-        mBackgroundTimer?.schedule(object : TimerTask() {
-            override fun run() {
-                mHandler.post { updateBackground(mBackgroundUri) }
-            }
-        }, BACKGROUND_UPDATE_DELAY.toLong())
-    }
+
 
     private inner class GridItemPresenter : Presenter() {
         override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {

@@ -187,6 +187,10 @@ object PreviewGenerator {
         failedUrls.clear()
     }
 
+    fun getPreviewFromCache(url: String): Bitmap? {
+        return previewCache.get(url)
+    }
+
     /**
      * 将 URL 标记为失败（通常是因为遇到非法的视频格式/源错误）
      */
