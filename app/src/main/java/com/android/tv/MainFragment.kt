@@ -40,6 +40,9 @@ import jp.wasabeef.glide.transformations.GrayscaleTransformation
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import android.graphics.Bitmap
+import android.view.View
+import android.widget.ImageView
+import androidx.cardview.widget.CardView
 import androidx.leanback.app.RowsSupportFragment
 import androidx.leanback.widget.VerticalGridView
 import androidx.leanback.widget.HorizontalGridView
@@ -66,7 +69,9 @@ class MainFragment : BrowseSupportFragment() {
     // PreviewGenerator 相关
     private var isPreviewGeneratorInitialized = false
     private var previewScheduleRunnable: Runnable? = null
+    private var livePreviewRunnable: Runnable? = null
     private val PREVIEW_DEBOUNCE_MS = 100L
+    private val LIVE_PREVIEW_DELAY_MS = 500L
 
     private val NUM_ROWS = 6
     private val NUM_COLS = 15
@@ -94,11 +99,14 @@ class MainFragment : BrowseSupportFragment() {
     override fun onPause() {
         super.onPause()
         Log.d(TAG.d, "onPause")
+        livePreviewRunnable?.let { mHandler.removeCallbacks(it) }
+        PreviewGenerator.stopLivePreview()
     }
 
     override fun onStop() {
         super.onStop()
         Log.d(TAG.d, "onStop")
+        PreviewGenerator.stopLivePreview()
     }
 
     override fun onDestroy() {
@@ -106,6 +114,8 @@ class MainFragment : BrowseSupportFragment() {
         Log.d(TAG.d, "onDestroy: " + mBackgroundTimer?.toString())
         mBackgroundTimer?.cancel()
         previewScheduleRunnable?.let { mHandler.removeCallbacks(it) }
+        livePreviewRunnable?.let { mHandler.removeCallbacks(it) }
+        PreviewGenerator.stopLivePreview()
     }
 
     override fun onDestroyView() {
@@ -156,8 +166,8 @@ class MainFragment : BrowseSupportFragment() {
             // 初始化 PreviewGenerator
             if (!isPreviewGeneratorInitialized) {
                 isPreviewGeneratorInitialized = true
-                (requireActivity() as? MainActivity)?.initializePreviewGenerator { url, bitmap ->
-                    onPreviewReady(url, bitmap)
+                (requireActivity() as? MainActivity)?.initializePreviewGenerator { title, url, bitmap ->
+                    onPreviewReady(title, url, bitmap)
                 }
             }
 
@@ -204,30 +214,65 @@ class MainFragment : BrowseSupportFragment() {
     /**
      * 预览完成回调
      */
-    private fun onPreviewReady(videoUrl: String, bitmap: Bitmap) {
-        Log.d(TAG.d, "Preview ready: $videoUrl, selected item is ${mSelectedItem?.videoUrl}")
+    private fun onPreviewReady(title: String, videoUrl: String, bitmap: Bitmap) {
+        Log.d(TAG.d, "onPreviewReady: Preview ready: title = ${title}; url = $videoUrl, selected item is ${mSelectedItem?.videoUrl}")
         // 只有当完成的预览是当前选中的项目时，才更新背景
         if (mSelectedItem?.videoUrl == videoUrl) {
             updateBackground(bitmap)
         }
 
-        // 刷新可见项的视图以显示卡片预览图
-        rowsAdapter?.let { adapter ->
-            for (i in 0 until adapter.size()) {
-                val row = adapter.get(i) as? Row ?: continue
-                val listRow = row as? ListRow ?: continue
-                val rowAdapter = listRow.adapter
-                for (j in 0 until rowAdapter.size()) {
-                    val item = rowAdapter.get(j)
-                    if (item is Movie && item.videoUrl == videoUrl) {
-                        // 通知刷新对应项
-                        Log.d(TAG.d, "notifyItemChanged for card preview: ${item.title}")
-                        rowAdapter.notifyItemRangeChanged(j, 1)
-                        break
+        val rowsFragment = rowsSupportFragment ?: return
+        val vGridView = rowsFragment.verticalGridView ?: return
+        // 1. 遍历当前屏幕上可见的“行”视图
+        for (i in 0 until vGridView.childCount) {
+            val rowView = vGridView.getChildAt(i)
+            val rowPos = vGridView.getChildAdapterPosition(rowView)
+            if (rowPos == -1) continue
+            Log.d(TAG.d, "onPreviewReady: rowPos: $rowPos")
+
+            val listRow = adapter.get(rowPos) as? ListRow ?: continue
+            val rowAdapter = listRow.adapter as? ArrayObjectAdapter ?: continue
+
+            val hGridView = rowView.findViewById<HorizontalGridView>(androidx.leanback.R.id.row_content) ?: return
+
+            for (n in 0 until hGridView.childCount) {
+                val cardView = hGridView.getChildAt(n)
+                val cardPos = hGridView.getChildAdapterPosition(cardView)
+                if (cardPos == -1) continue
+                Log.d(TAG.d, "onPreviewReady: cardPos: $cardPos")
+
+                val v = rowAdapter.get(cardPos)
+                if (v is Movie) {
+                    Log.d(TAG.d, "onPreviewReady: cardPos: $cardPos; url: ${v.videoUrl}; cardViewType: ${cardView.javaClass}")
+                    if (v.videoUrl == videoUrl) {
+                        val mainImageView = cardView.findViewById<ImageView>(androidx.leanback.R.id.main_image)
+                        if (mainImageView != null) {
+                            Log.d(TAG.d, "onPreviewReady: find target position: ${rowPos}-${cardPos}")
+                            mainImageView.setImageBitmap(bitmap)
+                            return
+                        }
                     }
                 }
             }
         }
+
+//        // 刷新可见项的视图以显示卡片预览图
+//        rowsAdapter?.let { adapter ->
+//            for (i in 0 until adapter.size()) {
+//                val row = adapter.get(i) as? Row ?: continue
+//                val listRow = row as? ListRow ?: continue
+//                val rowAdapter = listRow.adapter
+//                for (j in 0 until rowAdapter.size()) {
+//                    val item = rowAdapter.get(j)
+//                    if (item is Movie && item.videoUrl == videoUrl) {
+//                        // 通知刷新对应项
+//                        Log.d(TAG.d, "notifyItemChanged for card preview: ${item.title}")
+//                        rowAdapter.notifyItemRangeChanged(j, 1)
+//                        break
+//                    }
+//                }
+//            }
+//        }
     }
 
     /**
@@ -242,6 +287,51 @@ class MainFragment : BrowseSupportFragment() {
         mHandler.postDelayed(previewScheduleRunnable!!, PREVIEW_DEBOUNCE_MS)
     }
 
+    /**
+     * 调度实时预览播放
+     * 选中后 500ms 触发
+     */
+    private fun scheduleLivePreview(item: Movie, itemViewHolder: Presenter.ViewHolder?) {
+        livePreviewRunnable?.let { mHandler.removeCallbacks(it) }
+        // 立即停止上一个播放
+        PreviewGenerator.stopLivePreview()
+
+        val vh = itemViewHolder as? CardPresenter.CardViewHolder ?: return
+        vh.previewTextureView.tag = false
+
+        livePreviewRunnable = Runnable {
+            // 确保仍然是选中项
+            if (mSelectedItem == item) {
+                val mainImage = vh.cardView.mainImageView
+                if (mainImage != null) {
+                    var width = -1
+                    var height = -1
+                    if (mainImage.tag == null) {
+                        mainImage.tag = Pair(mainImage.width, mainImage.height)
+                        width = mainImage.width
+                        height = mainImage.height
+                    } else {
+                        val tag = mainImage.tag as Pair<*, *>
+                        width = tag.first as Int
+                        height = tag.second as Int
+                    }
+
+                    vh.previewTextureView.layoutParams.width = width
+                    vh.previewTextureView.layoutParams.height = height
+
+                    vh.previewTextureView.tag = true
+
+                    mainImage.layoutParams.width = 0
+                    mainImage.layoutParams.height = 0
+
+                    Log.d("TAG", "scheduleLivePreview: mainImage GONE")
+                    PreviewGenerator.startLivePreview(item.videoUrl!!, vh.previewTextureView, mainImage)
+                }
+            }
+        }
+        mHandler.postDelayed(livePreviewRunnable!!, LIVE_PREVIEW_DELAY_MS)
+    }
+
     private fun updateVisibleItems(item: Movie) {
         val adapter = rowsAdapter ?: return
 
@@ -252,44 +342,8 @@ class MainFragment : BrowseSupportFragment() {
         val selectedPosition = selectedPosition
         if (selectedPosition < 0) return
 
-        val selectedRow = adapter.get(selectedPosition) as? Row ?: return
-        val listRow = selectedRow as? ListRow ?: return
-        val rowAdapter = listRow.adapter
-
         Log.d(TAG.d, "requestPreview: ${item.title}")
         PreviewGenerator.requestPreview(item.title!!,item.videoUrl!!, 0, CARD_WIDTH, CARD_HEIGHT)
-
-//        var pos = -1;
-//        for (i in 0 until rowAdapter.size()) {
-//            val v = rowAdapter.get(i)
-//            if (v is Movie && v == item) {
-//                pos = i
-//                break
-//            }
-//        }
-//
-//        if (pos == -1) {
-//            Log.d(TAG.d, "Item not found in adapter")
-//            return
-//        }
-//
-//        // 相邻的位置的优先级依次降低
-//        for (i in (pos - 1) downTo 0) {
-//            Log.d(TAG.d, "pos: $pos, i: $i")
-//            val v = rowAdapter.get(i)
-//            if (v is Movie) {
-//                Log.d(TAG.d, "requestPreview: ${v.title}")
-//                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, pos - i, CARD_WIDTH, CARD_HEIGHT)
-//            }
-//        }
-//
-//        for (i in (pos + 1) until rowAdapter.size()) {
-//            val v = rowAdapter.get(i)
-//            if (v is Movie) {
-//                Log.d(TAG.d, "requestPreview: ${v.title}")
-//                PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, i - pos, CARD_WIDTH, CARD_HEIGHT)
-//            }
-//        }
 
         val rowsFragment = rowsSupportFragment ?: return
         val vGridView = rowsFragment.verticalGridView ?: return
@@ -299,7 +353,7 @@ class MainFragment : BrowseSupportFragment() {
             val rowPos = vGridView.getChildAdapterPosition(rowView)
             if (rowPos == -1) continue
 
-//            if (rowPos == selectedPosition) continue
+            val isSelectedRow = rowPos == selectedPosition
 
             val listRow = adapter.get(rowPos) as? ListRow ?: continue
             val rowAdapter = listRow.adapter as? ArrayObjectAdapter ?: continue
@@ -324,11 +378,11 @@ class MainFragment : BrowseSupportFragment() {
 
                     Log.d(TAG.d, "requestPreview: ${v.title}")
                     if (visiblePositions.contains(n)) {
-                        PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, 1, CARD_WIDTH, CARD_HEIGHT)
+                        Log.d(TAG.d, "visiblePositions contains: ${v.title}")
+                        val priority = if (isSelectedRow) 1 else 2
+                        PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, priority, CARD_WIDTH, CARD_HEIGHT)
                         continue
                     }
-
-//                    PreviewGenerator.requestPreview(v.title!!,v.videoUrl!!, rowPos * 100 + n, CARD_WIDTH, CARD_HEIGHT)
                 }
             }
         }
@@ -350,6 +404,8 @@ class MainFragment : BrowseSupportFragment() {
                 }
                 intent.putExtra(DetailsActivity.MOVIE, item)
 
+                PreviewGenerator.stopLivePreview()
+
                 if (item.studio != "直播频道") {
                     val imageView = (itemViewHolder.view as ImageCardView).mainImageView
                     if (imageView != null) {
@@ -366,6 +422,7 @@ class MainFragment : BrowseSupportFragment() {
                     startActivity(intent)
                 }
             } else if (item is String) {
+                PreviewGenerator.stopLivePreview()
                 if (item == resources.getString(R.string.personal_settings)) {
                     val intent = Intent(requireActivity(), SettingsActivity::class.java)
                     startActivity(intent)
@@ -384,14 +441,16 @@ class MainFragment : BrowseSupportFragment() {
             itemViewHolder: Presenter.ViewHolder?, item: Any?,
             rowViewHolder: RowPresenter.ViewHolder, row: Row
         ) {
+            if (mSelectedItem == item) {
+                return
+            }
+
             Log.d(TAG.d, "Selected: " + item)
             if (item is Movie) {
                 mSelectedItem = item
 
                 // 如果该项之前已失败多次，用户的主动选择将给予它新的机会
-                if (PreviewGenerator.isPermanentlyFailed(item.videoUrl!!)) {
-                    PreviewGenerator.clearFailureRecord(item.videoUrl!!)
-                }
+                PreviewGenerator.clearFailureRecord(item.videoUrl!!)
 
                 val cachedBitmap = PreviewGenerator.getPreviewFromCache(item.videoUrl!!)
                 if (cachedBitmap != null) {
@@ -399,6 +458,8 @@ class MainFragment : BrowseSupportFragment() {
                 }
                 // 无论如何都触发预览调度，以便在没有缓存时生成
                 schedulePreviewRequests(item)
+                // 500ms 后触发实时预览播放
+                scheduleLivePreview(item, itemViewHolder)
             }
         }
     }

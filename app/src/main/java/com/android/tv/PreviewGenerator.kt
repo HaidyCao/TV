@@ -10,9 +10,14 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
 import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageView
+import androidx.leanback.widget.ImageCardView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -62,17 +67,24 @@ object PreviewGenerator {
     private var nextRequestId = 0
 
     // 预览完成回调
-    private var onPreviewReady: ((String, Bitmap) -> Unit)? = null
+    private var onPreviewReady: ((String, String, Bitmap) -> Unit)? = null
 
     // 隐藏的父容器（用于创建 TextureView）
     private var hiddenContainer: FrameLayout? = null
+
+    // 实时预览相关
+    private var livePlayer: ExoPlayer? = null
+    private var liveTextureView: TextureView? = null
+    private var lastMainImageView: ImageView? = null
+
+    private var lastVideoUrl: String? = null
 
     /**
      * 初始化预览生成器
      * @param container 隐藏容器（必须已添加到窗口）
      * @param onPreviewReady 预览完成回调
      */
-    fun init(container: FrameLayout, onPreviewReady: (String, Bitmap) -> Unit) {
+    fun init(container: FrameLayout, onPreviewReady: (String, String, Bitmap) -> Unit) {
         val context = container.context.applicationContext
         val maxConcurrent = if (isTelevision(context)) MAX_CONCURRENT_TV else MAX_CONCURRENT_NON_TV
 
@@ -80,11 +92,11 @@ object PreviewGenerator {
             TAG,
             "[INIT] PreviewGenerator.init called, cache size=${previewCache.size()}, maxConcurrent=$maxConcurrent"
         )
-        
+
         if (executor == null) {
             executor = Executors.newFixedThreadPool(maxConcurrent)
         }
-        
+
         this.onPreviewReady = onPreviewReady
         this.hiddenContainer = container
 
@@ -209,6 +221,122 @@ object PreviewGenerator {
     }
 
     /**
+     * 开始实时预览播放（静音）
+     * 使用来自 CardPresenter.CardViewHolder 的预置 TextureView
+     */
+    fun startLivePreview(videoUrl: String, textureView: TextureView, mainImageView: ImageView) {
+//        stopLivePreview()
+
+        this.lastMainImageView = mainImageView
+        this.liveTextureView = textureView
+        this.lastVideoUrl = videoUrl
+
+        Log.d(TAG, "[LIVE] Starting preview: $videoUrl, TextureView available: ${textureView.isAvailable}, size: ${textureView.width}x${textureView.height}")
+
+        val context = textureView.context
+        textureView.visibility = View.VISIBLE
+
+        val factory = DefaultRenderersFactory(context.applicationContext)
+            .setEnableDecoderFallback(true)
+
+        val newPlayer = ExoPlayer.Builder(context.applicationContext, factory)
+            .setLooper(Looper.getMainLooper())
+            .build().apply {
+                volume = 0f
+                repeatMode = Player.REPEAT_MODE_ONE
+                setMediaItem(MediaItem.fromUri(videoUrl))
+                setVideoTextureView(textureView)
+
+                // 优化轨道选择
+                val trackSelector = trackSelector as? DefaultTrackSelector
+                trackSelector?.let {
+                    val parameters = it.buildUponParameters()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                        .setMaxVideoSize(640, 360)
+                        .build()
+                    it.parameters = parameters
+                }
+
+                addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(state: Int) {
+                        val stateStr = when(state) {
+                            Player.STATE_IDLE -> "IDLE"
+                            Player.STATE_BUFFERING -> "BUFFERING"
+                            Player.STATE_READY -> "READY"
+                            Player.STATE_ENDED -> "ENDED"
+                            else -> "UNKNOWN"
+                        }
+                        Log.d(TAG, "[LIVE] Player state: $stateStr")
+                        if (state == Player.STATE_READY) {
+                            Log.d(TAG, "[LIVE] Player READY")
+
+                            mainImageView.layoutParams.width = 0
+                            mainImageView.layoutParams.height = 0
+                            mainImageView.layoutParams = mainImageView.layoutParams
+                            mainImageView.visibility = View.GONE
+                        }
+                    }
+
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        Log.e(TAG, "[LIVE] Player error: ${error.message} (Type: ${error.errorCodeName})", error)
+                        // 如果遇到 Source Error，尝试重新 prepare (或者以后考虑换 MediaSource)
+                    }
+                })
+
+                prepare()
+                playWhenReady = true
+            }
+
+        livePlayer = newPlayer
+    }
+
+    /**
+     * 停止实时预览播放
+     */
+    fun stopLivePreview() {
+        livePlayer?.let {
+            it.stop()
+            it.release()
+            Log.d(TAG, "[LIVE] Stopped preview player")
+        }
+        livePlayer = null
+
+        liveTextureView?.let {
+            val bitmap = it.bitmap
+
+            if (lastVideoUrl != null && bitmap != null) {
+                previewCache.put(lastVideoUrl, bitmap)
+            }
+
+            it.layoutParams.width = 0
+            it.layoutParams.height = 0
+
+            it.layoutParams = it.layoutParams
+            Log.d(TAG, "[LIVE] Hidden preview TextureView")
+        }
+        liveTextureView = null
+
+        lastMainImageView?.let { view ->
+            val tag = view.tag
+            if (tag is Pair<*, *>) {
+                val width = tag.first as Int
+                val height = tag.second as Int
+                view.layoutParams.width = width
+                view.layoutParams.height = height
+
+                view.layoutParams = view.layoutParams
+                if (lastVideoUrl != null) {
+                    view.setImageBitmap(previewCache.get(lastVideoUrl))
+                }
+            }
+
+            Log.d(TAG, "[LIVE] Restored mainImageView visibility")
+        }
+        lastMainImageView = null
+        lastVideoUrl = null
+    }
+
+    /**
      * 记录一次URL加载失败
      */
     fun recordFailure(videoUrl: String) {
@@ -279,6 +407,7 @@ object PreviewGenerator {
      */
     fun destroy() {
         Log.d(TAG, "[DESTROY] Destroying PreviewGenerator")
+        stopLivePreview()
         scope.cancel()
         clearAll()
         executor?.shutdownNow()
@@ -313,7 +442,7 @@ private data class PreviewRequest(
 private class PreviewWorker(
     val request: PreviewRequest,
     private val container: FrameLayout,
-    private val onPreviewReady: ((String, Bitmap) -> Unit)?
+    private val onPreviewReady: ((String, String, Bitmap) -> Unit)?
 ) {
     private val TAG = "PreviewWorker[${request.id}]"
     private var textureView: TextureView? = null
@@ -528,7 +657,7 @@ private class PreviewWorker(
                 // 通知回调
                 mainHandler.post {
                     if (!isCancelled) {
-                        onPreviewReady?.invoke(request.videoUrl, bitmap)
+                        onPreviewReady?.invoke(request.videoName, request.videoUrl, bitmap)
                     }
                 }
             } else {

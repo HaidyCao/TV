@@ -57,7 +57,7 @@ class MainActivity : FragmentActivity() {
      * 初始化 PreviewGenerator
      * 由 MainFragment 调用
      */
-    fun initializePreviewGenerator(onPreviewReady: (String, android.graphics.Bitmap) -> Unit) {
+    fun initializePreviewGenerator(onPreviewReady: (String, String, android.graphics.Bitmap) -> Unit) {
         if (previewContainer == null) {
             previewContainer = findViewById(R.id.preview_container)
             // 如果已经附加，直接初始化

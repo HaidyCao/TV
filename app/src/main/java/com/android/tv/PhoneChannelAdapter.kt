@@ -67,7 +67,7 @@ class PhoneChannelAdapter(
         }
 
         // 初始化预览生成器
-        PreviewGenerator.init(hiddenContainer) { videoUrl, bitmap ->
+        PreviewGenerator.init(hiddenContainer) { title, videoUrl, bitmap ->
             // 预览完成回调
             onPreviewReady(videoUrl, bitmap)
         }
