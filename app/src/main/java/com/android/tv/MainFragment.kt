@@ -59,9 +59,9 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var mBackgroundManager: BackgroundManager
     private var mDefaultBackground: Drawable? = null
     private lateinit var mMetrics: DisplayMetrics
-    private var mBackgroundTimer: Timer? = null
-    private var mBackgroundUri: String? = null
+
     private var mSelectedItem: Movie? = null
+    private var mSelectedViewHolder: Presenter.ViewHolder? = null
 
     // 行适配器，用于访问和更新数据
     private var rowsAdapter: ArrayObjectAdapter? = null
@@ -72,9 +72,6 @@ class MainFragment : BrowseSupportFragment() {
     private var livePreviewRunnable: Runnable? = null
     private val PREVIEW_DEBOUNCE_MS = 100L
     private val LIVE_PREVIEW_DELAY_MS = 500L
-
-    private val NUM_ROWS = 6
-    private val NUM_COLS = 15
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
@@ -94,28 +91,26 @@ class MainFragment : BrowseSupportFragment() {
     override fun onResume() {
         super.onResume()
         Log.d(TAG.d, "onResume")
+
+        updateAllPreview()
     }
 
     override fun onPause() {
         super.onPause()
         Log.d(TAG.d, "onPause")
         livePreviewRunnable?.let { mHandler.removeCallbacks(it) }
-        PreviewGenerator.stopLivePreview()
     }
 
     override fun onStop() {
         super.onStop()
         Log.d(TAG.d, "onStop")
-        PreviewGenerator.stopLivePreview()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG.d, "onDestroy: " + mBackgroundTimer?.toString())
-        mBackgroundTimer?.cancel()
+        Log.d(TAG.d, "onDestroy: ")
         previewScheduleRunnable?.let { mHandler.removeCallbacks(it) }
         livePreviewRunnable?.let { mHandler.removeCallbacks(it) }
-        PreviewGenerator.stopLivePreview()
     }
 
     override fun onDestroyView() {
@@ -128,6 +123,44 @@ class MainFragment : BrowseSupportFragment() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         Log.d(TAG.d, "onSaveInstanceState")
+    }
+
+    private fun updateAllPreview() {
+        val rowsFragment = rowsSupportFragment ?: return
+        val vGridView = rowsFragment.verticalGridView ?: return
+        // 1. 遍历当前屏幕上可见的“行”视图
+        for (i in 0 until vGridView.childCount) {
+            val rowView = vGridView.getChildAt(i)
+            val rowPos = vGridView.getChildAdapterPosition(rowView)
+            if (rowPos == -1) continue
+            Log.d(TAG.d, "onPreviewReady: rowPos: $rowPos")
+
+            val listRow = adapter.get(rowPos) as? ListRow ?: continue
+            val rowAdapter = listRow.adapter as? ArrayObjectAdapter ?: continue
+
+            val hGridView = rowView.findViewById<HorizontalGridView>(androidx.leanback.R.id.row_content) ?: return
+
+            for (n in 0 until hGridView.childCount) {
+                val cardView = hGridView.getChildAt(n)
+                val cardPos = hGridView.getChildAdapterPosition(cardView)
+                if (cardPos == -1) continue
+                Log.d(TAG.d, "onPreviewReady: cardPos: $cardPos")
+
+                val v = rowAdapter.get(cardPos)
+                if (v is Movie) {
+                    Log.d(TAG.d, "onPreviewReady: cardPos: $cardPos; url: ${v.videoUrl}; cardViewType: ${cardView.javaClass}")
+                    val bitmap = PreviewGenerator.getPreviewFromCache(v.videoUrl!!)
+                    if (bitmap != null) {
+                        val mainImageView = cardView.findViewById<ImageView>(androidx.leanback.R.id.main_image)
+                        mainImageView.setImageBitmap(bitmap)
+                    }
+                }
+            }
+        }
+
+        val selectedItem = mSelectedItem ?: return
+        val selectedViewHolder = mSelectedViewHolder ?: return
+        onItemSelected(selectedItem, selectedViewHolder)
     }
 
     private fun prepareBackgroundManager() {
@@ -179,9 +212,6 @@ class MainFragment : BrowseSupportFragment() {
                 val header = HeaderItem(adapter.size().toLong(), category)
                 adapter.add(ListRow(header, listRowAdapter))
             }
-
-
-
 
             // 2. 设置界面选项
             val gridHeader = HeaderItem(adapter.size().toLong(), "设置")
@@ -255,24 +285,6 @@ class MainFragment : BrowseSupportFragment() {
                 }
             }
         }
-
-//        // 刷新可见项的视图以显示卡片预览图
-//        rowsAdapter?.let { adapter ->
-//            for (i in 0 until adapter.size()) {
-//                val row = adapter.get(i) as? Row ?: continue
-//                val listRow = row as? ListRow ?: continue
-//                val rowAdapter = listRow.adapter
-//                for (j in 0 until rowAdapter.size()) {
-//                    val item = rowAdapter.get(j)
-//                    if (item is Movie && item.videoUrl == videoUrl) {
-//                        // 通知刷新对应项
-//                        Log.d(TAG.d, "notifyItemChanged for card preview: ${item.title}")
-//                        rowAdapter.notifyItemRangeChanged(j, 1)
-//                        break
-//                    }
-//                }
-//            }
-//        }
     }
 
     /**
@@ -301,6 +313,7 @@ class MainFragment : BrowseSupportFragment() {
 
         livePreviewRunnable = Runnable {
             // 确保仍然是选中项
+            livePreviewRunnable = null
             if (mSelectedItem == item) {
                 val mainImage = vh.cardView.mainImageView
                 if (mainImage != null) {
@@ -448,20 +461,25 @@ class MainFragment : BrowseSupportFragment() {
             Log.d(TAG.d, "Selected: " + item)
             if (item is Movie) {
                 mSelectedItem = item
+                mSelectedViewHolder = itemViewHolder
 
-                // 如果该项之前已失败多次，用户的主动选择将给予它新的机会
-                PreviewGenerator.clearFailureRecord(item.videoUrl!!)
-
-                val cachedBitmap = PreviewGenerator.getPreviewFromCache(item.videoUrl!!)
-                if (cachedBitmap != null) {
-                    updateBackground(cachedBitmap)
-                }
-                // 无论如何都触发预览调度，以便在没有缓存时生成
-                schedulePreviewRequests(item)
-                // 500ms 后触发实时预览播放
-                scheduleLivePreview(item, itemViewHolder)
+                onItemSelected(item, itemViewHolder)
             }
         }
+    }
+
+    private fun onItemSelected(item: Movie, itemViewHolder: Presenter.ViewHolder?) {
+        // 如果该项之前已失败多次，用户的主动选择将给予它新的机会
+        PreviewGenerator.clearFailureRecord(item.videoUrl!!)
+
+        val cachedBitmap = PreviewGenerator.getPreviewFromCache(item.videoUrl!!)
+        if (cachedBitmap != null) {
+            updateBackground(cachedBitmap)
+        }
+        // 无论如何都触发预览调度，以便在没有缓存时生成
+        schedulePreviewRequests(item)
+        // 500ms 后触发实时预览播放
+        scheduleLivePreview(item, itemViewHolder)
     }
 
     private fun updateBackground(bitmap: Bitmap) {
@@ -481,9 +499,7 @@ class MainFragment : BrowseSupportFragment() {
             })
     }
 
-
-
-    private inner class GridItemPresenter : Presenter() {
+    private class GridItemPresenter : Presenter() {
         override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {
             val view = TextView(parent.context)
             view.layoutParams = ViewGroup.LayoutParams(GRID_ITEM_WIDTH, GRID_ITEM_HEIGHT)
@@ -492,15 +508,15 @@ class MainFragment : BrowseSupportFragment() {
             view.setBackgroundColor(ContextCompat.getColor(parent.context, R.color.default_background))
             view.setTextColor(Color.WHITE)
             view.gravity = Gravity.CENTER
-            return Presenter.ViewHolder(view)
+            return ViewHolder(view)
         }
 
-        override fun onBindViewHolder(viewHolder: Presenter.ViewHolder, item: Any?) {
+        override fun onBindViewHolder(viewHolder: ViewHolder, item: Any?) {
             if (item == null) return
             (viewHolder.view as TextView).text = item as String
         }
 
-        override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) {}
+        override fun onUnbindViewHolder(viewHolder: ViewHolder) {}
     }
 
     companion object {
