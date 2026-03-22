@@ -232,7 +232,8 @@ class MainFragment : BrowseSupportFragment() {
             // 启动搜索界面
             val searchFragment = SearchFragment()
             requireActivity().supportFragmentManager.beginTransaction()
-                .replace(R.id.main_browse_fragment, searchFragment)
+                .add(R.id.main_browse_fragment, searchFragment, "search")
+                .hide(this@MainFragment)
                 .addToBackStack(null)
                 .commit()
         }

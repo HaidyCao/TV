@@ -20,9 +20,20 @@ class MainActivity : FragmentActivity() {
         Log.d("MainActivity", "onCreate: savedInstanceState=${savedInstanceState != null}")
         setContentView(R.layout.activity_main)
         if (savedInstanceState == null) {
-            getSupportFragmentManager().beginTransaction()
+            supportFragmentManager.beginTransaction()
                 .replace(R.id.main_browse_fragment, MainFragment())
                 .commitNow()
+        }
+        supportFragmentManager.addOnBackStackChangedListener {
+            val searchFragment = supportFragmentManager.findFragmentByTag("search")
+            if (searchFragment == null) {
+                val mainFragment = supportFragmentManager.findFragmentById(R.id.main_browse_fragment)
+                if (mainFragment is MainFragment) {
+                    supportFragmentManager.beginTransaction()
+                        .show(mainFragment)
+                        .commit()
+                }
+            }
         }
     }
 

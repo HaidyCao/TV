@@ -1,6 +1,5 @@
 package com.android.tv
 
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
@@ -13,6 +12,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.ui.PlayerView
+import androidx.core.net.toUri
 
 @UnstableApi
 class PlaybackActivity : AppCompatActivity() {
@@ -78,7 +78,7 @@ class PlaybackActivity : AppCompatActivity() {
                     }
                 })
 
-                setMediaItem(MediaItem.fromUri(Uri.parse(videoUrl)))
+                setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
                 prepare()
                 playWhenReady = true
             }
