@@ -1,0 +1,10 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/fastlane_background_glass" />
+        </shape>
+    </item>
+    <item android:gravity="center">
+        <inset android:drawable="@drawable/baseline_play_arrow_24" android:inset="20dp" />
+    </item>
+</layer-list>

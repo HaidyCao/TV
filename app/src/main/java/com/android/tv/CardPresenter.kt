@@ -29,7 +29,7 @@ class CardPresenter : Presenter() {
         sDefaultBackgroundColor = ContextCompat.getColor(parent.context, R.color.default_background)
         sSelectedBackgroundColor =
             ContextCompat.getColor(parent.context, R.color.selected_background)
-        mDefaultCardImage = ContextCompat.getDrawable(parent.context, R.drawable.movie)
+        mDefaultCardImage = ContextCompat.getDrawable(parent.context, R.drawable.placeholder_with_play_arrow)
 
         val cardView = object : ImageCardView(parent.context) {
             override fun setSelected(selected: Boolean) {

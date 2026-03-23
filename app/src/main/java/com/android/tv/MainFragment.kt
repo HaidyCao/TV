@@ -186,7 +186,7 @@ class MainFragment : BrowseSupportFragment() {
         isHeadersTransitionOnBackEnabled = true
 
         // set fastLane (or headers) background color
-        brandColor = ContextCompat.getColor(requireContext(), R.color.fastlane_background)
+        brandColor = ContextCompat.getColor(requireContext(), R.color.fastlane_background_glass)
         // set search icon color
         searchAffordanceColor = ContextCompat.getColor(requireContext(), R.color.search_opaque)
     }
@@ -527,7 +527,6 @@ class MainFragment : BrowseSupportFragment() {
             }
         }
 
-        private const val BACKGROUND_UPDATE_DELAY = 300
         private const val GRID_ITEM_WIDTH = 200
         private const val GRID_ITEM_HEIGHT = 200
         private const val CARD_WIDTH = 313
