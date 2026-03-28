@@ -1,28 +1,31 @@
 package com.android.tv
 
-import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
+import android.media.MediaCodecList
 import android.os.Bundle
 import android.util.Log
-import android.view.SurfaceView
+import android.view.View
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.effect.Presentation
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.PlayerView
-
+import java.lang.reflect.Field
 
 @UnstableApi
 class PlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
+    private var decoderInfoUpdated = false
+    private var selectedDecoderName: String? = null
+    private var currentMediaItem: MediaItem? = null
+    private var currentTitle: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,7 +33,6 @@ class PlaybackActivity : AppCompatActivity() {
         setContentView(R.layout.activity_playback)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // 隐藏状态栏和导航栏（沉浸式全屏）
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
             val controller = window.insetsController
@@ -54,89 +56,176 @@ class PlaybackActivity : AppCompatActivity() {
         val videoUrl = movie?.videoUrl
 
         if (videoUrl.isNullOrEmpty()) {
-            Log.e("PlaybackActivity", "Video URL is null or empty!")
             finish()
             return
         }
 
-        // 启动播放，整合 MediaItem 与 标题/内容 处理
         val mediaItem = MediaItem.fromUri(videoUrl.toUri())
         start(mediaItem, movie.title ?: "")
     }
 
-    /**
-     * 根据 MediaItem 和 标题 启动播放，整合特效与初始化逻辑
-     */
     private fun start(mediaItem: MediaItem, title: String) {
-        Log.d("PlaybackActivity", "Starting playback for: $title")
+        currentMediaItem = mediaItem
+        currentTitle = title
         val playerView = findViewById<PlayerView>(R.id.player_view)
-
-//        playerView.videoSurfaceView?.scaleX = 1.01f
-//        playerView.videoSurfaceView?.scaleY = 1.01f
 
         val renderersFactory = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
+            .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                val decoders = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
+                if (selectedDecoderName != null) {
+                    val matched = decoders.filter { it.name == selectedDecoderName }
+                    if (matched.isNotEmpty()) return@setMediaCodecSelector matched
+                }
+                decoders.filter { !it.name.startsWith("c2.qti.avc.decoder") }.toList() // TODO: 小米 avc 优先使用 c2.android.avc.decoder
+            }
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
+        player?.release()
         player = ExoPlayer.Builder(this, renderersFactory)
             .build().apply {
                 addListener(object : Player.Listener {
-                    override fun onVideoSizeChanged(videoSize: VideoSize) {
-                        super.onVideoSizeChanged(videoSize)
-                        Log.d("PlaybackActivity", "Video size changed: ${videoSize.width}, ${videoSize.height}")
-
-//                        if (videoSize.width > 0 && videoSize.height > 0) {
-//                            // 获取屏幕密度
-//                            val density = 1
-//                            surfaceView?.holder?.setFixedSize(videoSize.width, videoSize.height)
-//
-////                            // 将 PlayerView 的宽高设为视频原始像素对应的 dp
-////                            // 这样在渲染时，1个视频像素正好对应1个物理像素
-//                            val lp = playerView.layoutParams
-//                            lp.width = (videoSize.width / density).toInt()
-//                            lp.height = (videoSize.height / density).toInt()
-//                            playerView.setLayoutParams(lp)
-////
-////                            // 关键：禁止 AspectRatioFrameLayout 的二次拉伸
-//                            playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
-//                        }
-                    }
-
                     override fun onPlaybackStateChanged(state: Int) {
-                        val stateName = when(state) {
-                            1 -> "STATE_IDLE"
-                            2 -> "STATE_BUFFERING"
-                            3 -> "STATE_READY"
-                            4 -> "STATE_ENDED"
-                            else -> "UNKNOWN"
+                        if (state == Player.STATE_READY && !decoderInfoUpdated) {
+                            updateDecoderInfo(playerView)
+                            decoderInfoUpdated = true
                         }
-                        Log.d("PlaybackActivity", "Playback state: $state ($stateName)")
                     }
-
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e("PlaybackActivity", "Player error: ${error.message}")
                     }
-
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        Log.d("PlaybackActivity", "Is playing: $isPlaying")
-                    }
-
-                    override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                        Log.d("PlaybackActivity", "Tracks changed:")
-                        tracks.groups.forEach { group ->
-                            val trackType = group.type
-                            val mimeType = group.getTrackFormat(0).sampleMimeType
-                            Log.d("PlaybackActivity", "  Track type: $trackType, mime: $mimeType, selected: ${group.isSelected}")
-                        }
-                    }
                 })
-
                 setMediaItem(mediaItem)
                 prepare()
                 playWhenReady = true
             }
-
         playerView.player = player
+    }
+
+    private fun updateDecoderInfo(playerView: PlayerView) {
+        try {
+            val controllerField = PlayerView::class.java.getDeclaredField("controller").apply { isAccessible = true }
+            val controller = controllerField.get(playerView) ?: return
+
+            val settingsAdapterField = controller.javaClass.getDeclaredField("settingsAdapter").apply { isAccessible = true }
+            val originalAdapter = settingsAdapterField.get(controller) as androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>
+
+            var currentMimeType: String? = null
+            player?.currentTracks?.groups?.forEach { group ->
+                if (group.type == androidx.media3.common.C.TRACK_TYPE_VIDEO && group.isSelected) {
+                    currentMimeType = group.getTrackFormat(0).sampleMimeType
+                }
+            }
+            val mime = currentMimeType ?: "video/avc"
+            val availableDecoders = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+                .filter { !it.isEncoder && it.supportedTypes.contains(mime) }
+                .map { it.name }
+            val currentDecoder = selectedDecoderName ?: availableDecoders.firstOrNull() ?: "Default"
+
+            val mainTextsField = originalAdapter.javaClass.getDeclaredField("mainTexts").apply { isAccessible = true }
+            val subTextsField = originalAdapter.javaClass.getDeclaredField("subTexts").apply { isAccessible = true }
+            val iconIdsField = originalAdapter.javaClass.getDeclaredField("iconIds").apply { isAccessible = true }
+
+            val mainTexts = (mainTextsField.get(originalAdapter) as Array<String>).toMutableList()
+            val subTexts = (subTextsField.get(originalAdapter) as Array<String>).toMutableList()
+            val iconIds = (iconIdsField.get(originalAdapter) as Array<Drawable>).toMutableList()
+
+            var decoderIndex = -1
+
+            if (!mainTexts.contains("解码器")) {
+                decoderIndex = mainTexts.size
+                mainTexts.add("解码器")
+                subTexts.add(currentDecoder)
+                iconIds.add(iconIds[0])
+                mainTextsField.set(originalAdapter, mainTexts.toTypedArray())
+                subTextsField.set(originalAdapter, subTexts.toTypedArray())
+                iconIdsField.set(originalAdapter, iconIds.toTypedArray())
+            } else {
+                val index = mainTexts.indexOf("解码器")
+                decoderIndex = index
+                subTexts[index] = currentDecoder
+                subTextsField.set(originalAdapter, subTexts.toTypedArray())
+            }
+
+            val settingsViewField = controller.javaClass.getDeclaredField("settingsView").apply { isAccessible = true }
+            val settingsView = settingsViewField.get(controller) as androidx.recyclerview.widget.RecyclerView
+
+            // 使用包装适配器拦截点击事件
+            val wrapperAdapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
+                override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int) = originalAdapter.onCreateViewHolder(parent, viewType)
+                
+                override fun onBindViewHolder(holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, position: Int) {
+                    originalAdapter.onBindViewHolder(holder, position)
+                    Log.d("PlaybackActivity", "onBindViewHolder called for position $position")
+                    
+                    val currentTexts = mainTextsField.get(originalAdapter) as Array<String>
+                    if (position >= 0 && position < currentTexts.size && currentTexts[position] == "解码器") {
+                        Log.d("PlaybackActivity", "Setting click listener for item at position $position")
+                        holder.itemView.setOnClickListener {
+                            // 弹出对话框
+                            showDecoderSelectionDialog(availableDecoders)
+                            // 反射调用 hideSettingsMenu
+                            try {
+                                val hideMethod = controller.javaClass.getDeclaredMethod("hideSettingsMenu")
+                                hideMethod.isAccessible = true
+                                hideMethod.invoke(controller)
+                            } catch (e: Exception) {}
+                        }
+                    }
+                }
+
+                override fun getItemCount() = originalAdapter.itemCount
+                override fun getItemViewType(position: Int) = originalAdapter.getItemViewType(position)
+                override fun getItemId(position: Int) = originalAdapter.getItemId(position)
+            }
+
+//            settingsAdapterField.set(controller, wrapperAdapter)
+//            settingsView.adapter = wrapperAdapter
+
+            settingsView.addOnChildAttachStateChangeListener(object : androidx.recyclerview.widget.RecyclerView.OnChildAttachStateChangeListener {
+
+                override fun onChildViewAttachedToWindow(itemView: View) {
+                    val position = settingsView.getChildAdapterPosition(itemView)
+                    Log.d("PlaybackActivity", "onChildViewAttachedToWindow called for position $position")
+                    if (position == decoderIndex) {
+                        itemView.setOnClickListener {
+                            showDecoderSelectionDialog(availableDecoders)
+
+                            // 反射调用 hideSettingsMenu
+                            try {
+                                val settingsWindowField = controller.javaClass.getDeclaredField("settingsWindow")
+                                settingsWindowField.isAccessible = true
+                                val settingsWindow = settingsWindowField.get(controller)
+
+                                val dismissMethod = settingsWindow.javaClass.getDeclaredMethod("dismiss")
+                                dismissMethod.isAccessible = true
+
+                                dismissMethod.invoke(settingsWindow)
+                            } catch (e: Exception) {}
+                        }
+                    }
+                }
+
+                override fun onChildViewDetachedFromWindow(p0: View) {
+                }
+            })
+            Log.d("PlaybackActivity", "Adapter hijacked successfully")
+
+        } catch (e: Exception) {
+            Log.e("PlaybackActivity", "Failed to hijack adapter: ${e.message}")
+        }
+    }
+
+    private fun showDecoderSelectionDialog(decoders: List<String>) {
+        // TODO: 使用 PlayerControlView 中的 UI 显示
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("选择解码器")
+            .setItems(decoders.toTypedArray()) { _, which ->
+                selectedDecoderName = decoders[which]
+                decoderInfoUpdated = false
+                currentMediaItem?.let { start(it, currentTitle ?: "") }
+            }
+            .show()
     }
 
     override fun onPause() {
@@ -149,5 +238,4 @@ class PlaybackActivity : AppCompatActivity() {
         player?.release()
         player = null
     }
-
 }
