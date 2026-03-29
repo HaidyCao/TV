@@ -15,17 +15,75 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.recyclerview.widget.RecyclerView
 import androidx.media3.ui.PlayerView
-import java.lang.reflect.Field
 
 @UnstableApi
 class PlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
-    private var decoderInfoUpdated = false
     private var selectedDecoderName: String? = null
     private var currentMediaItem: MediaItem? = null
     private var currentTitle: String? = null
+
+    private var mAvailableDecoders: List<String> = emptyList()
+
+
+    private inner class DecoderAdapter(private val decoders: List<String>, private val controller: Any) :
+        RecyclerView.Adapter<DecoderAdapter.SubSettingViewHolder>() {
+
+        private var selectedIndex: Int = decoders.indexOf(selectedDecoderName).let { if (it == -1) 0 else it }
+
+        inner class SubSettingViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+            val textView: TextView = itemView.findViewById(androidx.media3.ui.R.id.exo_text)
+            val checkView: View = itemView.findViewById(androidx.media3.ui.R.id.exo_check)
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SubSettingViewHolder {
+            val v = LayoutInflater.from(parent.context).inflate(
+                androidx.media3.ui.R.layout.exo_styled_sub_settings_list_item,
+                parent,
+                false
+            )
+            return SubSettingViewHolder(v)
+        }
+
+        override fun onBindViewHolder(holder: SubSettingViewHolder, position: Int) {
+            holder.textView.text = decoders[position]
+            if (position == selectedIndex) {
+                holder.itemView.isSelected = true
+                holder.checkView.visibility = View.VISIBLE
+            } else {
+                holder.itemView.isSelected = false
+                holder.checkView.visibility = View.INVISIBLE
+            }
+            holder.itemView.setOnClickListener {
+                if (position != selectedIndex) {
+                    val newDecoder = decoders[position]
+                    selectedDecoderName = newDecoder
+                    currentMediaItem?.let { start(it, currentTitle ?: "") }
+                }
+                dismissSettingsWindow()
+            }
+        }
+
+        private fun dismissSettingsWindow() {
+            try {
+                val settingsWindowField = controller.javaClass.getDeclaredField("settingsWindow")
+                settingsWindowField.isAccessible = true
+                val settingsWindow = settingsWindowField.get(controller)
+                val dismissMethod = settingsWindow.javaClass.getDeclaredMethod("dismiss")
+                dismissMethod.invoke(settingsWindow)
+            } catch (e: Exception) {
+                Log.e("PlaybackActivity", "Failed to dismiss settings window: ${e.message}")
+            }
+        }
+
+        override fun getItemCount(): Int = decoders.size
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,12 +101,12 @@ class PlaybackActivity : AppCompatActivity() {
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = (
-                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
-                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
             )
         }
 
@@ -77,7 +135,24 @@ class PlaybackActivity : AppCompatActivity() {
                     val matched = decoders.filter { it.name == selectedDecoderName }
                     if (matched.isNotEmpty()) return@setMediaCodecSelector matched
                 }
-                decoders.filter { !it.name.startsWith("c2.qti.avc.decoder") }.toList() // TODO: 小米 avc 优先使用 c2.android.avc.decoder
+
+                var filteredDecoders = decoders
+
+                // 小米 avc 优先使用 c2.android.avc.decoder
+                if (android.os.Build.MANUFACTURER.equals("Xiaomi", ignoreCase = true) &&
+                    mimeType.equals(androidx.media3.common.MimeTypes.VIDEO_H264, ignoreCase = true)) {
+                    val priorityDecoder = "c2.android.avc.decoder"
+                    val preferred = filteredDecoders.filter { it.name == priorityDecoder }
+                    val others = filteredDecoders.filter { it.name != priorityDecoder }
+                    filteredDecoders = preferred + others
+                }
+
+                if (!filteredDecoders.isEmpty()) {
+                    selectedDecoderName = filteredDecoders.first().name
+                }
+                mAvailableDecoders = filteredDecoders.map { it.name }.toList()
+                updateDecoderInfo(playerView)
+                filteredDecoders.toList()
             }
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
@@ -86,10 +161,7 @@ class PlaybackActivity : AppCompatActivity() {
             .build().apply {
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
-                        if (state == Player.STATE_READY && !decoderInfoUpdated) {
-                            updateDecoderInfo(playerView)
-                            decoderInfoUpdated = true
-                        }
+                        Log.d("PlaybackActivity", "onPlaybackStateChanged() called with: state = $state")
                     }
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e("PlaybackActivity", "Player error: ${error.message}")
@@ -108,18 +180,9 @@ class PlaybackActivity : AppCompatActivity() {
             val controller = controllerField.get(playerView) ?: return
 
             val settingsAdapterField = controller.javaClass.getDeclaredField("settingsAdapter").apply { isAccessible = true }
-            val originalAdapter = settingsAdapterField.get(controller) as androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>
+            val originalAdapter = settingsAdapterField.get(controller) as RecyclerView.Adapter<RecyclerView.ViewHolder>
 
-            var currentMimeType: String? = null
-            player?.currentTracks?.groups?.forEach { group ->
-                if (group.type == androidx.media3.common.C.TRACK_TYPE_VIDEO && group.isSelected) {
-                    currentMimeType = group.getTrackFormat(0).sampleMimeType
-                }
-            }
-            val mime = currentMimeType ?: "video/avc"
-            val availableDecoders = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
-                .filter { !it.isEncoder && it.supportedTypes.contains(mime) }
-                .map { it.name }
+            val availableDecoders = mAvailableDecoders
             val currentDecoder = selectedDecoderName ?: availableDecoders.firstOrNull() ?: "Default"
 
             val mainTextsField = originalAdapter.javaClass.getDeclaredField("mainTexts").apply { isAccessible = true }
@@ -130,8 +193,7 @@ class PlaybackActivity : AppCompatActivity() {
             val subTexts = (subTextsField.get(originalAdapter) as Array<String>).toMutableList()
             val iconIds = (iconIdsField.get(originalAdapter) as Array<Drawable>).toMutableList()
 
-            var decoderIndex = -1
-
+            var decoderIndex: Int
             if (!mainTexts.contains("解码器")) {
                 decoderIndex = mainTexts.size
                 mainTexts.add("解码器")
@@ -148,60 +210,16 @@ class PlaybackActivity : AppCompatActivity() {
             }
 
             val settingsViewField = controller.javaClass.getDeclaredField("settingsView").apply { isAccessible = true }
-            val settingsView = settingsViewField.get(controller) as androidx.recyclerview.widget.RecyclerView
+            val settingsView = settingsViewField.get(controller) as RecyclerView
 
-            // 使用包装适配器拦截点击事件
-            val wrapperAdapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
-                override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int) = originalAdapter.onCreateViewHolder(parent, viewType)
-                
-                override fun onBindViewHolder(holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, position: Int) {
-                    originalAdapter.onBindViewHolder(holder, position)
-                    Log.d("PlaybackActivity", "onBindViewHolder called for position $position")
-                    
-                    val currentTexts = mainTextsField.get(originalAdapter) as Array<String>
-                    if (position >= 0 && position < currentTexts.size && currentTexts[position] == "解码器") {
-                        Log.d("PlaybackActivity", "Setting click listener for item at position $position")
-                        holder.itemView.setOnClickListener {
-                            // 弹出对话框
-                            showDecoderSelectionDialog(availableDecoders)
-                            // 反射调用 hideSettingsMenu
-                            try {
-                                val hideMethod = controller.javaClass.getDeclaredMethod("hideSettingsMenu")
-                                hideMethod.isAccessible = true
-                                hideMethod.invoke(controller)
-                            } catch (e: Exception) {}
-                        }
-                    }
-                }
-
-                override fun getItemCount() = originalAdapter.itemCount
-                override fun getItemViewType(position: Int) = originalAdapter.getItemViewType(position)
-                override fun getItemId(position: Int) = originalAdapter.getItemId(position)
-            }
-
-//            settingsAdapterField.set(controller, wrapperAdapter)
-//            settingsView.adapter = wrapperAdapter
-
-            settingsView.addOnChildAttachStateChangeListener(object : androidx.recyclerview.widget.RecyclerView.OnChildAttachStateChangeListener {
+            settingsView.addOnChildAttachStateChangeListener(object : RecyclerView.OnChildAttachStateChangeListener {
 
                 override fun onChildViewAttachedToWindow(itemView: View) {
                     val position = settingsView.getChildAdapterPosition(itemView)
                     Log.d("PlaybackActivity", "onChildViewAttachedToWindow called for position $position")
-                    if (position == decoderIndex) {
+                    if (settingsView.adapter == originalAdapter &&  position == decoderIndex) {
                         itemView.setOnClickListener {
-                            showDecoderSelectionDialog(availableDecoders)
-
-                            // 反射调用 hideSettingsMenu
-                            try {
-                                val settingsWindowField = controller.javaClass.getDeclaredField("settingsWindow")
-                                settingsWindowField.isAccessible = true
-                                val settingsWindow = settingsWindowField.get(controller)
-
-                                val dismissMethod = settingsWindow.javaClass.getDeclaredMethod("dismiss")
-                                dismissMethod.isAccessible = true
-
-                                dismissMethod.invoke(settingsWindow)
-                            } catch (e: Exception) {}
+                            showDecoderSelectionDialog(controller, availableDecoders)
                         }
                     }
                 }
@@ -216,16 +234,27 @@ class PlaybackActivity : AppCompatActivity() {
         }
     }
 
-    private fun showDecoderSelectionDialog(decoders: List<String>) {
-        // TODO: 使用 PlayerControlView 中的 UI 显示
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("选择解码器")
-            .setItems(decoders.toTypedArray()) { _, which ->
-                selectedDecoderName = decoders[which]
-                decoderInfoUpdated = false
-                currentMediaItem?.let { start(it, currentTitle ?: "") }
-            }
-            .show()
+    private fun showDecoderSelectionDialog(controller: Any, decoders: List<String>) {
+        Log.d(
+            "PlaybackActivity",
+            "showDecoderSelectionDialog() called with: controller = $controller, decoders = $decoders"
+        )
+        try {
+            // 反射获取 settingsButton 作为 anchorView
+            val settingsButtonField = controller.javaClass.getDeclaredField("settingsButton")
+            settingsButtonField.isAccessible = true
+            val anchorView = settingsButtonField.get(controller) as View
+
+            val displayMethod = controller.javaClass.getDeclaredMethod(
+                "displaySettingsWindow",
+                RecyclerView.Adapter::class.java,
+                View::class.java
+            )
+            displayMethod.isAccessible = true
+            displayMethod.invoke(controller, DecoderAdapter(decoders, controller), anchorView)
+        } catch (e: Exception) {
+            Log.e("PlaybackActivity", "Failed to display settings window via reflection: ${e.message}")
+        }
     }
 
     override fun onPause() {
