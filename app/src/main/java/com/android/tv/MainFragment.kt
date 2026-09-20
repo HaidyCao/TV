@@ -52,6 +52,7 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var mMetrics: DisplayMetrics
     private var mBackgroundTimer: Timer? = null
     private var mBackgroundUri: String? = null
+    private lateinit var previewFrameManager: PreviewFrameManager
 
     private val NUM_ROWS = 6
     private val NUM_COLS = 15
@@ -59,6 +60,9 @@ class MainFragment : BrowseSupportFragment() {
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
         Log.i(TAG, "onCreate")
+
+        // 初始化 PreviewFrameManager
+        previewFrameManager = PreviewFrameManager(requireContext())
 
         prepareBackgroundManager()
         setupUIElements()
@@ -70,6 +74,8 @@ class MainFragment : BrowseSupportFragment() {
         super.onDestroy()
         Log.d(TAG, "onDestroy: " + mBackgroundTimer?.toString())
         mBackgroundTimer?.cancel()
+        // 释放 PreviewFrameManager 资源
+        previewFrameManager.release()
     }
 
     private fun prepareBackgroundManager() {
@@ -99,7 +105,7 @@ class MainFragment : BrowseSupportFragment() {
     private fun loadRows() {
         lifecycleScope.launch {
             val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
-            val cardPresenter = CardPresenter()
+            val cardPresenter = CardPresenter(previewFrameManager)
 
             // 1. 加载电视直播频道
             val tvGroups = TvDataManager.fetchTvChannels(requireContext())

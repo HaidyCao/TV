@@ -1,11 +1,13 @@
 package com.android.tv
 
+import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import androidx.leanback.widget.ImageCardView
 import androidx.leanback.widget.Presenter
 import androidx.core.content.ContextCompat
 import android.util.Log
 import android.view.ViewGroup
+import android.widget.ImageView
 
 import com.bumptech.glide.Glide
 import kotlin.properties.Delegates
@@ -14,7 +16,7 @@ import kotlin.properties.Delegates
  * A CardPresenter is used to generate Views and bind Objects to them on demand.
  * It contains an ImageCardView.
  */
-class CardPresenter : Presenter() {
+class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
     private var sSelectedBackgroundColor: Int by Delegates.notNull()
     private var sDefaultBackgroundColor: Int by Delegates.notNull()
@@ -50,14 +52,32 @@ class CardPresenter : Presenter() {
         cardView.contentText = movie.studio
         cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
         
-        val imageView = cardView.mainImageView
+        val imageView = cardView.mainImageView as ImageView
         if (imageView != null) {
-            Glide.with(viewHolder.view.context)
-                .load(movie.cardImageUrl)
-                .centerCrop()
-                .error(mDefaultCardImage)
-                .into(imageView)
+            // 先尝试加载预览帧，如果失败再使用卡片图片
+            val videoUrl = movie.videoUrl
+            if (previewFrameManager != null && !videoUrl.isNullOrBlank()) {
+                previewFrameManager.getPreviewFrame(videoUrl) { bitmap: Bitmap? ->
+                    if (bitmap != null) {
+                        Log.d(TAG, "加载预览帧成功: ${movie.title}")
+                        imageView.setImageBitmap(bitmap)
+                    } else {
+                        Log.d(TAG, "加载预览帧失败，使用卡片图片: ${movie.title}")
+                        loadCardImage(movie, imageView)
+                    }
+                }
+            } else {
+                loadCardImage(movie, imageView)
+            }
         }
+    }
+
+    private fun loadCardImage(movie: Movie, imageView: ImageView) {
+        Glide.with(imageView.context)
+            .load(movie.cardImageUrl)
+            .centerCrop()
+            .error(mDefaultCardImage)
+            .into(imageView)
     }
 
     override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) {
