@@ -1,13 +1,18 @@
 package com.android.tv
 
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
-import android.view.View
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
+import androidx.core.os.BundleCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.ui.PlayerView
@@ -16,23 +21,26 @@ class PhonePlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
 
+    @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        val movie = intent.getSerializableExtra("channel") as? Movie
+        val movie = BundleCompat.getSerializable(intent.extras ?: Bundle(), "channel", Movie::class.java)
         val videoUrl = movie?.videoUrl
 
-        Log.d("PhonePlayback", "Playing: ${movie?.title}, URL: $videoUrl")
+        Log.d("PhonePlayback", "Playing: ${movie?.title}")
 
         if (videoUrl.isNullOrEmpty()) {
             finish()
             return
         }
 
-        // 全屏播放
-        window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+        // Fullscreen playback without deprecated system-ui flags.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
 
         val playerView = PlayerView(this)
         playerView.setBackgroundColor(android.graphics.Color.BLACK)
@@ -67,6 +75,11 @@ class PhonePlaybackActivity : AppCompatActivity() {
 
                 override fun onPlayerError(error: PlaybackException) {
                     Log.e("PhonePlayback", "Player Error: ${error.errorCodeName} (${error.errorCode}), message: ${error.message}")
+                    Toast.makeText(
+                        this@PhonePlaybackActivity,
+                        getString(R.string.playback_error),
+                        Toast.LENGTH_LONG
+                    ).show()
                     if (error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED) {
                         Log.e("PhonePlayback", "Decoding failed - likely missing codec")
                     }
@@ -77,7 +90,7 @@ class PhonePlaybackActivity : AppCompatActivity() {
                 }
             })
 
-            setMediaItem(MediaItem.fromUri(Uri.parse(videoUrl)))
+            setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
             prepare()
             playWhenReady = true
         }

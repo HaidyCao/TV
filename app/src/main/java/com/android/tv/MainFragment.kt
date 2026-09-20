@@ -1,15 +1,19 @@
 package com.android.tv
 
-import java.util.Collections
-import java.util.Timer
-import java.util.TimerTask
-
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.core.app.ActivityOptionsCompat
+import androidx.core.content.ContextCompat
 import androidx.leanback.app.BackgroundManager
 import androidx.leanback.app.BrowseSupportFragment
 import androidx.leanback.widget.ArrayObjectAdapter
@@ -22,134 +26,118 @@ import androidx.leanback.widget.OnItemViewSelectedListener
 import androidx.leanback.widget.Presenter
 import androidx.leanback.widget.Row
 import androidx.leanback.widget.RowPresenter
-import androidx.core.app.ActivityOptionsCompat
-import androidx.core.content.ContextCompat
-import android.util.DisplayMetrics
-import android.util.Log
-import android.view.Gravity
-import android.view.ViewGroup
-import android.widget.TextView
-import android.widget.Toast
-import android.view.WindowMetrics
-import android.view.WindowInsets
-
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
-
-import androidx.lifecycle.lifecycleScope
-import androidx.fragment.app.Fragment
 import kotlinx.coroutines.launch
 
-/**
- * Loads a grid of cards with movies to browse.
- */
+/** Displays the shared, app-scoped TV channel list. */
 class MainFragment : BrowseSupportFragment() {
 
-    private val mHandler = Handler(Looper.getMainLooper())
-    private lateinit var mBackgroundManager: BackgroundManager
-    private var mDefaultBackground: Drawable? = null
-    private lateinit var mMetrics: DisplayMetrics
-    private var mBackgroundTimer: Timer? = null
-    private var mBackgroundUri: String? = null
-    private lateinit var previewFrameManager: PreviewFrameManager
+    private val backgroundHandler = Handler(Looper.getMainLooper())
+    private var backgroundUpdate: Runnable? = null
+    private lateinit var backgroundManager: BackgroundManager
+    private var defaultBackground: Drawable? = null
+    private lateinit var metrics: DisplayMetrics
+    private var backgroundUri: String? = null
+    private var previewFrameManager: PreviewFrameManager? = null
 
-    private val NUM_ROWS = 6
-    private val NUM_COLS = 15
-
-    override fun onActivityCreated(savedInstanceState: Bundle?) {
-        super.onActivityCreated(savedInstanceState)
-        Log.i(TAG, "onCreate")
-
-        // 初始化 PreviewFrameManager
-        previewFrameManager = PreviewFrameManager(requireContext())
-
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        previewFrameManager = PreviewFrameManager()
         prepareBackgroundManager()
-        setupUIElements()
-        loadRows()
+        setupUiElements()
         setupEventListeners()
+        observeChannelState()
+        ChannelRepository.ensureLoaded(requireContext())
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        Log.d(TAG, "onDestroy: " + mBackgroundTimer?.toString())
-        mBackgroundTimer?.cancel()
-        // 释放 PreviewFrameManager 资源
-        previewFrameManager.release()
+    override fun onDestroyView() {
+        backgroundUpdate?.let(backgroundHandler::removeCallbacks)
+        backgroundUpdate = null
+        previewFrameManager?.release()
+        previewFrameManager = null
+        super.onDestroyView()
     }
 
     private fun prepareBackgroundManager() {
-        mBackgroundManager = BackgroundManager.getInstance(activity)
-        mBackgroundManager.attach(requireActivity().window)
-        mDefaultBackground = ContextCompat.getDrawable(requireContext(), R.drawable.default_background)
-
-        // 使用 WindowMetrics 获取屏幕尺寸，解决 DisplayMetrics 弃用问题
-        val windowMetrics: WindowMetrics = requireActivity().windowManager.currentWindowMetrics
-        mMetrics = DisplayMetrics()
-        windowMetrics.bounds.width().also { mMetrics.widthPixels = it }
-        windowMetrics.bounds.height().also { mMetrics.heightPixels = it }
+        backgroundManager = BackgroundManager.getInstance(requireActivity())
+        backgroundManager.attach(requireActivity().window)
+        defaultBackground = ContextCompat.getDrawable(requireContext(), R.drawable.default_background)
+        metrics = resources.displayMetrics
+        backgroundManager.drawable = defaultBackground
     }
 
-    private fun setupUIElements() {
+    private fun setupUiElements() {
         title = getString(R.string.browse_title)
-        // over title
         headersState = HEADERS_ENABLED
         isHeadersTransitionOnBackEnabled = true
-
-        // set fastLane (or headers) background color
         brandColor = ContextCompat.getColor(requireContext(), R.color.fastlane_background)
-        // set search icon color
         searchAffordanceColor = ContextCompat.getColor(requireContext(), R.color.search_opaque)
     }
 
-    private fun loadRows() {
-        lifecycleScope.launch {
-            val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
-            val cardPresenter = CardPresenter(previewFrameManager)
-
-            // 1. 加载电视直播频道
-            val tvGroups = TvDataManager.fetchTvChannels(requireContext())
-            tvGroups.forEach { (category, channels) ->
-                val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-                channels.forEach { listRowAdapter.add(it) }
-                val header = HeaderItem(rowsAdapter.size().toLong(), category)
-                rowsAdapter.add(ListRow(header, listRowAdapter))
-            }
-
-            // 2. 加载原有的示例电影数据 (可选，放在直播后面)
-            val list = MovieList.list
-            if (list.isNotEmpty()) {
-                val movieRowAdapter = ArrayObjectAdapter(cardPresenter)
-                for (j in 0 until NUM_COLS) {
-                    movieRowAdapter.add(list[j % 5])
+    private fun observeChannelState() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ChannelRepository.state.collect { state ->
+                    when (state) {
+                        ChannelState.Idle -> renderRows(emptyMap(), getString(R.string.channel_loading))
+                        is ChannelState.Loading -> renderRows(
+                            state.groups,
+                            if (state.groups.isEmpty()) getString(R.string.channel_loading) else null
+                        )
+                        is ChannelState.Content -> renderRows(
+                            state.groups,
+                            if (state.fromSnapshot) getString(R.string.channel_offline_snapshot) else null
+                        )
+                        is ChannelState.Empty -> renderRows(emptyMap(), getString(R.string.channel_empty))
+                        is ChannelState.Error -> renderRows(state.groups, state.message)
+                    }
                 }
-                val header = HeaderItem(rowsAdapter.size().toLong(), "经典点播")
-                rowsAdapter.add(ListRow(header, movieRowAdapter))
             }
-
-            // 3. 设置界面选项
-            val gridHeader = HeaderItem(rowsAdapter.size().toLong(), "设置")
-            val mGridPresenter = GridItemPresenter()
-            val gridRowAdapter = ArrayObjectAdapter(mGridPresenter)
-            gridRowAdapter.add(resources.getString(R.string.grid_view))
-            gridRowAdapter.add(getString(R.string.error_fragment))
-            gridRowAdapter.add(resources.getString(R.string.personal_settings))
-            rowsAdapter.add(ListRow(gridHeader, gridRowAdapter))
-
-            adapter = rowsAdapter
         }
+    }
+
+    private fun renderRows(
+        tvGroups: Map<String, List<Movie>>,
+        statusMessage: String?
+    ) {
+        val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
+        val cardPresenter = CardPresenter(previewFrameManager)
+
+        tvGroups.forEach { (category, channels) ->
+            val listRowAdapter = ArrayObjectAdapter(cardPresenter)
+            channels.forEach(listRowAdapter::add)
+            rowsAdapter.add(ListRow(HeaderItem(rowsAdapter.size().toLong(), category), listRowAdapter))
+        }
+
+        statusMessage?.let { message ->
+            val statusAdapter = ArrayObjectAdapter(StatusPresenter())
+            statusAdapter.add(message)
+            rowsAdapter.add(ListRow(HeaderItem(rowsAdapter.size().toLong(), getString(R.string.channel_status)), statusAdapter))
+        }
+
+        val settingsAdapter = ArrayObjectAdapter(GridItemPresenter())
+        settingsAdapter.add(getString(R.string.personal_settings))
+        rowsAdapter.add(
+            ListRow(
+                HeaderItem(rowsAdapter.size().toLong(), getString(R.string.settings_header)),
+                settingsAdapter
+            )
+        )
+        adapter = rowsAdapter
     }
 
     private fun setupEventListeners() {
         setOnSearchClickedListener {
-            // 启动搜索界面
-            val searchFragment = SearchFragment()
             requireActivity().supportFragmentManager.beginTransaction()
-                .replace(R.id.main_browse_fragment, searchFragment)
+                .replace(R.id.main_browse_fragment, SearchFragment())
                 .addToBackStack(null)
                 .commit()
         }
-
         onItemViewClickedListener = ItemViewClickedListener()
         onItemViewSelectedListener = ItemViewSelectedListener()
     }
@@ -161,109 +149,117 @@ class MainFragment : BrowseSupportFragment() {
             rowViewHolder: RowPresenter.ViewHolder,
             row: Row
         ) {
-            if (item is Movie) {
-                Log.d(TAG, "Item: " + item.toString())
-                val intent = if (item.studio == "直播频道") {
-                    Intent(requireActivity(), PlaybackActivity::class.java)
-                } else {
-                    Intent(requireActivity(), DetailsActivity::class.java)
-                }
-                intent.putExtra(DetailsActivity.MOVIE, item)
-
-                if (item.studio != "直播频道") {
-                    val imageView = (itemViewHolder.view as ImageCardView).mainImageView
-                    if (imageView != null) {
-                        val bundle = ActivityOptionsCompat.makeSceneTransitionAnimation(
-                            requireActivity(),
-                            imageView,
-                            DetailsActivity.SHARED_ELEMENT_NAME
-                        ).toBundle()
-                        startActivity(intent, bundle)
-                    } else {
-                        startActivity(intent)
-                    }
-                } else {
-                    startActivity(intent)
-                }
-            } else if (item is String) {
-                if (item == resources.getString(R.string.personal_settings)) {
-                    val intent = Intent(requireActivity(), SettingsActivity::class.java)
-                    startActivity(intent)
-                } else if (item == getString(R.string.error_fragment)) {
-                    val intent = Intent(requireActivity(), BrowseErrorActivity::class.java)
-                    startActivity(intent)
-                } else {
-                    Toast.makeText(requireActivity(), item, Toast.LENGTH_SHORT).show()
+            when (item) {
+                is Movie -> openMovie(item, itemViewHolder)
+                is String -> if (item == getString(R.string.personal_settings)) {
+                    startActivity(Intent(requireActivity(), SettingsActivity::class.java))
                 }
             }
         }
+    }
+
+    private fun openMovie(movie: Movie, itemViewHolder: Presenter.ViewHolder) {
+        val intent = Intent(
+            requireActivity(),
+            if (movie.isLive) PlaybackActivity::class.java else DetailsActivity::class.java
+        ).putExtra(DetailsActivity.MOVIE, movie)
+
+        if (!movie.isLive) {
+            val imageView = (itemViewHolder.view as? ImageCardView)?.mainImageView
+            if (imageView != null) {
+                val bundle = ActivityOptionsCompat.makeSceneTransitionAnimation(
+                    requireActivity(),
+                    imageView,
+                    DetailsActivity.SHARED_ELEMENT_NAME
+                ).toBundle()
+                startActivity(intent, bundle)
+                return
+            }
+        }
+        startActivity(intent)
     }
 
     private inner class ItemViewSelectedListener : OnItemViewSelectedListener {
         override fun onItemSelected(
-            itemViewHolder: Presenter.ViewHolder?, item: Any?,
-            rowViewHolder: RowPresenter.ViewHolder, row: Row
+            itemViewHolder: Presenter.ViewHolder?,
+            item: Any?,
+            rowViewHolder: RowPresenter.ViewHolder,
+            row: Row
         ) {
             if (item is Movie) {
-                mBackgroundUri = item.backgroundImageUrl
-                startBackgroundTimer()
+                backgroundUri = item.backgroundImageUrl
+                scheduleBackgroundUpdate()
             }
         }
     }
 
-    private fun updateBackground(uri: String?) {
-        val width = mMetrics.widthPixels
-        val height = mMetrics.heightPixels
-        Glide.with(requireActivity())
-            .load(uri)
-            .centerCrop()
-            .error(mDefaultBackground)
-            .into(object : CustomTarget<Drawable>(width, height) {
-                override fun onResourceReady(resource: Drawable, transition: Transition<in Drawable>?) {
-                    mBackgroundManager.drawable = resource
-                }
-
-                override fun onLoadCleared(placeholder: Drawable?) {
-                    // Do nothing
-                }
-            })
-        mBackgroundTimer?.cancel()
+    private fun scheduleBackgroundUpdate() {
+        backgroundUpdate?.let(backgroundHandler::removeCallbacks)
+        backgroundUpdate = Runnable { updateBackground(backgroundUri) }
+        backgroundHandler.postDelayed(backgroundUpdate!!, BACKGROUND_UPDATE_DELAY_MS)
     }
 
-    private fun startBackgroundTimer() {
-        mBackgroundTimer?.cancel()
-        mBackgroundTimer = Timer()
-        mBackgroundTimer?.schedule(object : TimerTask() {
-            override fun run() {
-                mHandler.post { updateBackground(mBackgroundUri) }
-            }
-        }, BACKGROUND_UPDATE_DELAY.toLong())
+    private fun updateBackground(uri: String?) {
+        if (uri.isNullOrBlank()) {
+            backgroundManager.drawable = defaultBackground
+            return
+        }
+        Glide.with(this)
+            .load(uri)
+            .centerCrop()
+            .error(defaultBackground)
+            .into(object : CustomTarget<Drawable>(metrics.widthPixels, metrics.heightPixels) {
+                override fun onResourceReady(resource: Drawable, transition: Transition<in Drawable>?) {
+                    backgroundManager.drawable = resource
+                }
+
+                override fun onLoadCleared(placeholder: Drawable?) = Unit
+            })
     }
 
     private inner class GridItemPresenter : Presenter() {
         override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {
-            val view = TextView(parent.context)
-            view.layoutParams = ViewGroup.LayoutParams(GRID_ITEM_WIDTH, GRID_ITEM_HEIGHT)
-            view.isFocusable = true
-            view.isFocusableInTouchMode = true
-            view.setBackgroundColor(ContextCompat.getColor(parent.context, R.color.default_background))
-            view.setTextColor(Color.WHITE)
-            view.gravity = Gravity.CENTER
+            val view = TextView(parent.context).apply {
+                layoutParams = ViewGroup.LayoutParams(GRID_ITEM_WIDTH, GRID_ITEM_HEIGHT)
+                isFocusable = true
+                isFocusableInTouchMode = true
+                setBackgroundColor(ContextCompat.getColor(context, R.color.default_background))
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+            }
             return Presenter.ViewHolder(view)
         }
 
         override fun onBindViewHolder(viewHolder: Presenter.ViewHolder, item: Any?) {
-            if (item == null) return
-            (viewHolder.view as TextView).text = item as String
+            (viewHolder.view as TextView).text = item as? String
         }
 
-        override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) {}
+        override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) = Unit
+    }
+
+    private inner class StatusPresenter : Presenter() {
+        override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {
+            val view = TextView(parent.context).apply {
+                layoutParams = ViewGroup.LayoutParams(STATUS_ITEM_WIDTH, STATUS_ITEM_HEIGHT)
+                setTextColor(Color.LTGRAY)
+                gravity = Gravity.CENTER_VERTICAL
+                isFocusable = false
+            }
+            return Presenter.ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(viewHolder: Presenter.ViewHolder, item: Any?) {
+            (viewHolder.view as TextView).text = item as? String
+        }
+
+        override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) = Unit
     }
 
     companion object {
-        private val TAG = "MainFragment"
-        private const val BACKGROUND_UPDATE_DELAY = 300
-        private const val GRID_ITEM_WIDTH = 200
-        private const val GRID_ITEM_HEIGHT = 200
+        private const val BACKGROUND_UPDATE_DELAY_MS = 300L
+        private const val GRID_ITEM_WIDTH = 320
+        private const val GRID_ITEM_HEIGHT = 120
+        private const val STATUS_ITEM_WIDTH = 720
+        private const val STATUS_ITEM_HEIGHT = 72
     }
 }

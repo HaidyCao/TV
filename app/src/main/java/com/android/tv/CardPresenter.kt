@@ -7,8 +7,6 @@ import androidx.leanback.widget.Presenter
 import androidx.core.content.ContextCompat
 import android.util.Log
 import android.view.ViewGroup
-import android.widget.ImageView
-
 import com.bumptech.glide.Glide
 import kotlin.properties.Delegates
 
@@ -18,6 +16,7 @@ import kotlin.properties.Delegates
  */
 class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
+    private var mLiveCardImage: Drawable? = null
     private var sSelectedBackgroundColor: Int by Delegates.notNull()
     private var sDefaultBackgroundColor: Int by Delegates.notNull()
 
@@ -28,6 +27,7 @@ class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null
         sSelectedBackgroundColor =
             ContextCompat.getColor(parent.context, R.color.selected_background)
         mDefaultCardImage = ContextCompat.getDrawable(parent.context, R.drawable.movie)
+        mLiveCardImage = ContextCompat.getDrawable(parent.context, R.drawable.channel_placeholder)
 
         val cardView = object : ImageCardView(parent.context) {
             override fun setSelected(selected: Boolean) {
@@ -52,31 +52,40 @@ class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null
         cardView.contentText = movie.studio
         cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
         
-        val imageView = cardView.mainImageView as ImageView
-        if (imageView != null) {
-            // 先尝试加载预览帧，如果失败再使用卡片图片
-            val videoUrl = movie.videoUrl
-            if (previewFrameManager != null && !videoUrl.isNullOrBlank()) {
-                previewFrameManager.getPreviewFrame(videoUrl) { bitmap: Bitmap? ->
-                    if (bitmap != null) {
-                        Log.d(TAG, "加载预览帧成功: ${movie.title}")
-                        imageView.setImageBitmap(bitmap)
-                    } else {
-                        Log.d(TAG, "加载预览帧失败，使用卡片图片: ${movie.title}")
-                        loadCardImage(movie, imageView)
-                    }
+        val imageView = cardView.mainImageView ?: return
+        val requestKey = "${movie.id}:${movie.videoUrl.orEmpty()}"
+        imageView.tag = requestKey
+
+        // IPTV/live cards must never open their stream just to paint a thumbnail.
+        // They use a playlist-provided logo or local fallback artwork instead.
+        val videoUrl = movie.videoUrl
+        if (!movie.isLive && previewFrameManager != null && !videoUrl.isNullOrBlank()) {
+            Glide.with(imageView).clear(imageView)
+            imageView.setImageDrawable(mDefaultCardImage)
+            previewFrameManager.getPreviewFrame(videoUrl) { bitmap: Bitmap? ->
+                if (imageView.tag != requestKey) return@getPreviewFrame
+                if (bitmap != null) {
+                    Glide.with(imageView).clear(imageView)
+                    imageView.setImageBitmap(bitmap)
+                } else {
+                    loadCardImage(movie, imageView)
                 }
-            } else {
-                loadCardImage(movie, imageView)
             }
+        } else {
+            loadCardImage(movie, imageView)
         }
     }
 
-    private fun loadCardImage(movie: Movie, imageView: ImageView) {
+    private fun loadCardImage(movie: Movie, imageView: android.widget.ImageView) {
+        val fallback = if (movie.isLive) mLiveCardImage else mDefaultCardImage
+        Glide.with(imageView).clear(imageView)
+        imageView.setImageDrawable(fallback)
+        if (movie.cardImageUrl.isNullOrBlank()) return
         Glide.with(imageView.context)
             .load(movie.cardImageUrl)
             .centerCrop()
-            .error(mDefaultCardImage)
+            .fallback(fallback)
+            .error(fallback)
             .into(imageView)
     }
 
@@ -84,6 +93,10 @@ class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null
         Log.d(TAG, "onUnbindViewHolder")
         val cardView = viewHolder.view as ImageCardView
         // Remove references to images so that the garbage collector can free up memory
+        cardView.mainImageView?.let { imageView ->
+            Glide.with(cardView).clear(imageView)
+            imageView.tag = null
+        }
         cardView.badgeImage = null
         cardView.mainImage = null
     }

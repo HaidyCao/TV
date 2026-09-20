@@ -4,10 +4,20 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import android.view.View
 import androidx.leanback.app.SearchSupportFragment
-import androidx.leanback.widget.*
+import androidx.leanback.widget.ArrayObjectAdapter
+import androidx.leanback.widget.HeaderItem
+import androidx.leanback.widget.ListRow
+import androidx.leanback.widget.ListRowPresenter
+import androidx.leanback.widget.ObjectAdapter
+import androidx.leanback.widget.OnItemViewClickedListener
+import androidx.leanback.widget.Presenter
+import androidx.leanback.widget.Row
+import androidx.leanback.widget.RowPresenter
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 
 class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResultProvider {
@@ -15,92 +25,81 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
     private val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
     private val cardPresenter = CardPresenter()
     private val handler = Handler(Looper.getMainLooper())
-    private var loadQueryTask: Runnable? = null
+    private var searchTask: Runnable? = null
     private var allChannels: List<Movie> = emptyList()
+    private var activeQuery = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setSearchResultProvider(this)
         setOnItemViewClickedListener(ItemViewClickedListener())
-
-        loadAllChannels()
     }
 
-    private fun clearSearch() {
-        setSearchQuery("", true)
-        rowsAdapter.clear()
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        observeChannels()
+        ChannelRepository.ensureLoaded(requireContext())
     }
 
-    private fun loadAllChannels() {
-        lifecycleScope.launch {
-            val channels = mutableListOf<Movie>()
-            val tvGroups = TvDataManager.fetchTvChannels(requireContext())
-            tvGroups.values.forEach { channels.addAll(it) }
-            allChannels = channels
-            Log.d(TAG, "Loaded ${allChannels.size} channels")
+    override fun onDestroyView() {
+        searchTask?.let(handler::removeCallbacks)
+        searchTask = null
+        super.onDestroyView()
+    }
+
+    private fun observeChannels() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ChannelRepository.state.collect { state ->
+                    allChannels = state.groups.values.flatten()
+                    if (activeQuery.isNotBlank()) renderQuery(activeQuery)
+                }
+            }
         }
     }
 
-    override fun getResultsAdapter(): ObjectAdapter {
-        return rowsAdapter
-    }
+    override fun getResultsAdapter(): ObjectAdapter = rowsAdapter
 
     override fun onQueryTextChange(newQuery: String): Boolean {
-        Log.d(TAG, "onQueryTextChange: $newQuery")
-        // 取消之前的任务
-        loadQueryTask?.let {
-            handler.removeCallbacks(it)
-        }
-        loadQueryTask = null
+        activeQuery = newQuery
+        searchTask?.let(handler::removeCallbacks)
+        searchTask = null
 
-        if (newQuery.isNotEmpty()) {
-            loadQueryTask = Runnable {
-                loadQuery(newQuery)
-            }
-            handler.postDelayed(loadQueryTask!!, SEARCH_DELAY_MS.toLong())
-        } else {
+        if (newQuery.isBlank()) {
             rowsAdapter.clear()
+        } else {
+            searchTask = Runnable { renderQuery(newQuery) }
+            handler.postDelayed(searchTask!!, SEARCH_DELAY_MS)
         }
         return true
     }
 
     override fun onQueryTextSubmit(query: String): Boolean {
-        Log.d(TAG, "onQueryTextSubmit: $query")
-        // 取消之前的任务
-        loadQueryTask?.let {
-            handler.removeCallbacks(it)
-        }
-        loadQueryTask = null
-
-        loadQuery(query)
+        activeQuery = query
+        searchTask?.let(handler::removeCallbacks)
+        searchTask = null
+        renderQuery(query)
         return true
     }
 
-    private fun loadQuery(query: String) {
+    private fun renderQuery(query: String) {
         rowsAdapter.clear()
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isBlank()) return
 
-        val filteredChannels = allChannels.filter { channel ->
-            val title = channel.title?.lowercase() ?: ""
-            val description = channel.description?.lowercase() ?: ""
-            val studio = channel.studio?.lowercase() ?: ""
-
-            title.contains(query.lowercase()) ||
-                description.contains(query.lowercase()) ||
-                studio.contains(query.lowercase())
+        val results = allChannels.filter { channel ->
+            sequenceOf(channel.title, channel.description, channel.studio, channel.category)
+                .filterNotNull()
+                .any { it.contains(normalizedQuery, ignoreCase = true) }
         }
-
-        Log.d(TAG, "Found ${filteredChannels.size} results for: $query")
-
-        if (filteredChannels.isEmpty()) {
-            val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-            val header = HeaderItem(0, "未找到相关频道")
-            rowsAdapter.add(ListRow(header, listRowAdapter))
+        val resultAdapter = ArrayObjectAdapter(cardPresenter)
+        results.forEach(resultAdapter::add)
+        val header = if (results.isEmpty()) {
+            HeaderItem(0, getString(R.string.no_results))
         } else {
-            val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-            filteredChannels.forEach { listRowAdapter.add(it) }
-            val header = HeaderItem(0, "搜索结果 (${filteredChannels.size})")
-            rowsAdapter.add(ListRow(header, listRowAdapter))
+            HeaderItem(0, getString(R.string.search_results, results.size))
         }
+        rowsAdapter.add(ListRow(header, resultAdapter))
     }
 
     private inner class ItemViewClickedListener : OnItemViewClickedListener {
@@ -110,21 +109,13 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
             rowViewHolder: RowPresenter.ViewHolder,
             row: Row
         ) {
-            if (item is Movie) {
-                Log.d(TAG, "Item: " + item.toString())
-                val intent = if (item.studio == "直播频道") {
-                    Intent(requireActivity(), PlaybackActivity::class.java)
-                } else {
-                    Intent(requireActivity(), DetailsActivity::class.java)
-                }
-                intent.putExtra(DetailsActivity.MOVIE, item)
-                startActivity(intent)
-            }
+            val movie = item as? Movie ?: return
+            val destination = if (movie.isLive) PlaybackActivity::class.java else DetailsActivity::class.java
+            startActivity(Intent(requireActivity(), destination).putExtra(DetailsActivity.MOVIE, movie))
         }
     }
 
     companion object {
-        private val TAG = "SearchFragment"
-        private const val SEARCH_DELAY_MS = 300
+        private const val SEARCH_DELAY_MS = 300L
     }
 }

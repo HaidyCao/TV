@@ -1,89 +1,121 @@
 package com.android.tv
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
-import android.widget.Toast
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SearchView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class PhoneMainActivity : AppCompatActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: PhoneChannelAdapter
-    private lateinit var swipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-    private lateinit var toolbar: androidx.appcompat.widget.Toolbar
+    private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var gridLayoutManager: GridLayoutManager
+    private lateinit var emptyView: TextView
 
-    private val allChannels = mutableListOf<Movie>()
-    private var isDataLoaded = false
+    private var allChannels: List<Movie> = emptyList()
+    private var activeQuery = ""
+    private var currentState: ChannelState = ChannelState.Idle
+    private var gridLevel = 3
 
-    private var gridLevel = 4
-
-    private fun getColumnCount(): Int {
-        return when (gridLevel) {
-            1 -> 1
-            2 -> 2
-            3 -> 3
-            else -> 4
-        }
-    }
+    private fun getColumnCount(): Int = gridLevel.coerceIn(1, 4)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_phone_main)
+        gridLevel = preferredColumnCount()
 
         recyclerView = findViewById(R.id.channel_list)
-        toolbar = findViewById(R.id.toolbar)
-        setSupportActionBar(toolbar)
+        emptyView = findViewById(R.id.empty_view)
+        setSupportActionBar(findViewById(R.id.toolbar))
 
-        val gridLayoutManager = GridLayoutManager(this, getColumnCount())
+        gridLayoutManager = GridLayoutManager(this, getColumnCount())
         recyclerView.layoutManager = gridLayoutManager
-        this.gridLayoutManager = gridLayoutManager
-        swipeRefresh = findViewById(R.id.swipe_refresh)
-        swipeRefresh.setOnRefreshListener {
-            loadChannels()
-        }
-
-        adapter = PhoneChannelAdapter({ channel ->
-            val intent = Intent(this, PhonePlaybackActivity::class.java)
-            intent.putExtra("channel", channel)
-            startActivity(intent)
-        }, getColumnCount())
+        adapter = PhoneChannelAdapter(
+            onClick = { channel ->
+                startActivity(Intent(this, PhonePlaybackActivity::class.java).putExtra("channel", channel))
+            },
+            initialPlayerPoolSize = 1
+        )
         recyclerView.adapter = adapter
-
-        var scrollRunnable: Runnable? = null
         recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                scrollRunnable?.let { recyclerView.removeCallbacks(it) }
-                scrollRunnable = Runnable {
-                    adapter.refreshPlayers()
-                }.apply {
-                    recyclerView.postDelayed(this, 100)
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                    adapter.schedulePreviewUpdate()
+                } else {
+                    adapter.pausePreview()
                 }
             }
         })
+
+        swipeRefresh = findViewById(R.id.swipe_refresh)
+        swipeRefresh.setOnRefreshListener {
+            ChannelRepository.refresh(this, force = true)
+        }
+
+        observeChannelState()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ChannelRepository.ensureLoaded(this)
     }
 
     override fun onResume() {
         super.onResume()
-        loadChannels()
+        adapter.schedulePreviewUpdate()
     }
 
-    override fun onCreateOptionsMenu(menu: android.view.Menu?): Boolean {
+    override fun onPause() {
+        adapter.pausePreview()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        adapter.releasePreviewPlayer()
+        super.onDestroy()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_phone_main, menu)
+        (menu.findItem(R.id.action_search).actionView as? SearchView)?.apply {
+            queryHint = getString(R.string.search_hint)
+            setOnQueryTextListener(object : SearchView.OnQueryTextListener {
+                override fun onQueryTextSubmit(query: String): Boolean {
+                    activeQuery = query
+                    applyFilter()
+                    clearFocus()
+                    return true
+                }
+
+                override fun onQueryTextChange(newText: String): Boolean {
+                    activeQuery = newText
+                    applyFilter()
+                    return true
+                }
+            })
+        }
         return true
     }
 
-    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.action_grid -> {
                 gridLevel = if (gridLevel >= 4) 1 else gridLevel + 1
-                updateLayoutManager()
+                gridLayoutManager.spanCount = getColumnCount()
+                adapter.updatePoolSize(getColumnCount())
                 true
             }
             R.id.action_settings -> {
@@ -94,45 +126,48 @@ class PhoneMainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateLayoutManager() {
-        val oldSpanCount = gridLayoutManager.spanCount
-        val newSpanCount = getColumnCount()
-        gridLayoutManager.spanCount = newSpanCount
-        
-        if (oldSpanCount != newSpanCount) {
-            adapter.updatePoolSize(newSpanCount)
+    private fun observeChannelState() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ChannelRepository.state.collect { state ->
+                    currentState = state
+                    allChannels = state.groups.values.flatten()
+                    swipeRefresh.isRefreshing = state is ChannelState.Loading
+                    applyFilter()
+                }
+            }
         }
     }
 
-    private fun loadChannels() {
-        if (isDataLoaded) {
-            adapter.submitList(allChannels.toList())
-            swipeRefresh.isRefreshing = false
-            
-            recyclerView.postDelayed({
-                adapter.refreshPlayers()
-            }, 300)
-            return
-        }
-
-        swipeRefresh.isRefreshing = true
-        CoroutineScope(Dispatchers.Main).launch {
-            val channels = withContext(Dispatchers.IO) {
-                TvDataManager.fetchTvChannels(this@PhoneMainActivity)
-            }
-
-            if (!isDestroyed && !isFinishing) {
-                allChannels.clear()
-                channels.values.forEach { allChannels.addAll(it) }
-
-                adapter.submitList(allChannels.toList())
-                swipeRefresh.isRefreshing = false
-                isDataLoaded = true
-
-                recyclerView.postDelayed({
-                    adapter.refreshPlayers()
-                }, 300)
+    private fun applyFilter() {
+        val query = activeQuery.trim()
+        val visibleChannels = if (query.isBlank()) {
+            allChannels
+        } else {
+            allChannels.filter { channel ->
+                sequenceOf(channel.title, channel.description, channel.category)
+                    .filterNotNull()
+                    .any { it.contains(query, ignoreCase = true) }
             }
         }
+        adapter.submitList(visibleChannels)
+        updateEmptyState(visibleChannels.isEmpty())
+        recyclerView.post { adapter.schedulePreviewUpdate() }
+    }
+
+    private fun updateEmptyState(isEmpty: Boolean) {
+        val message = when {
+            !isEmpty -> null
+            currentState is ChannelState.Loading -> getString(R.string.channel_loading)
+            currentState is ChannelState.Error -> (currentState as ChannelState.Error).message
+            activeQuery.isNotBlank() -> getString(R.string.no_results)
+            else -> getString(R.string.channel_empty)
+        }
+        emptyView.text = message
+        emptyView.visibility = if (isEmpty) View.VISIBLE else View.GONE
+    }
+
+    private fun preferredColumnCount(): Int {
+        return if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 4 else 3
     }
 }

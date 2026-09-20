@@ -12,7 +12,7 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
         android:background="#121212"
-        app:title="电视直播"
+        app:title="@string/phone_browse_title"
         app:titleTextColor="#FFFFFF"
         android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar" />
 

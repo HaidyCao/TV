@@ -16,6 +16,9 @@ data class Movie(
     var category: String? = null
 ) : Serializable {
 
+    val isLive: Boolean
+        get() = studio == LIVE_STUDIO
+
     override fun toString(): String {
         return "Movie{" +
                 "id=" + id +
@@ -28,5 +31,6 @@ data class Movie(
 
     companion object {
         internal const val serialVersionUID = 727566175075960653L
+        const val LIVE_STUDIO = "直播频道"
     }
 }

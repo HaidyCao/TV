@@ -1,12 +1,18 @@
 package com.android.tv
 
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
+import androidx.core.os.BundleCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.ui.PlayerView
@@ -15,16 +21,22 @@ class PlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
 
+    @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableImmersivePlayback()
         setContentView(R.layout.activity_playback)
 
         val playerView = findViewById<PlayerView>(R.id.player_view)
 
-        val movie = intent.extras?.getSerializable(DetailsActivity.MOVIE) as? Movie
+        val movie = BundleCompat.getSerializable(
+            intent.extras ?: Bundle(),
+            DetailsActivity.MOVIE,
+            Movie::class.java
+        )
         val videoUrl = movie?.videoUrl
 
-        Log.d("PlaybackActivity", "videoUrl: $videoUrl")
+        Log.d("PlaybackActivity", "Opening channel: ${movie?.title}")
 
         if (videoUrl.isNullOrEmpty()) {
             Log.e("PlaybackActivity", "Video URL is null or empty!")
@@ -42,10 +54,10 @@ class PlaybackActivity : AppCompatActivity() {
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
                         val stateName = when(state) {
-                            1 -> "STATE_IDLE"
-                            2 -> "STATE_BUFFERING"
-                            3 -> "STATE_READY"
-                            4 -> "STATE_ENDED"
+                            Player.STATE_IDLE -> "STATE_IDLE"
+                            Player.STATE_BUFFERING -> "STATE_BUFFERING"
+                            Player.STATE_READY -> "STATE_READY"
+                            Player.STATE_ENDED -> "STATE_ENDED"
                             else -> "UNKNOWN"
                         }
                         Log.d("PlaybackActivity", "Playback state: $state ($stateName)")
@@ -53,6 +65,11 @@ class PlaybackActivity : AppCompatActivity() {
 
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e("PlaybackActivity", "Player error: ${error.message}")
+                        Toast.makeText(
+                            this@PlaybackActivity,
+                            getString(R.string.playback_error),
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
 
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -69,7 +86,7 @@ class PlaybackActivity : AppCompatActivity() {
                     }
                 })
 
-                setMediaItem(MediaItem.fromUri(Uri.parse(videoUrl)))
+                setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
                 prepare()
                 playWhenReady = true
             }
@@ -82,9 +99,22 @@ class PlaybackActivity : AppCompatActivity() {
         player?.pause()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enableImmersivePlayback()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         player?.release()
         player = null
+    }
+
+    private fun enableImmersivePlayback() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
     }
 }

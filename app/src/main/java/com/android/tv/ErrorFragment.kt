@@ -18,13 +18,13 @@ class ErrorFragment : ErrorSupportFragment() {
 
     internal fun setErrorContent() {
         imageDrawable =
-            ContextCompat.getDrawable(activity!!, androidx.leanback.R.drawable.lb_ic_sad_cloud)
+            ContextCompat.getDrawable(requireContext(), android.R.drawable.ic_dialog_alert)
         message = resources.getString(R.string.error_fragment_message)
         setDefaultBackground(TRANSLUCENT)
 
         buttonText = resources.getString(R.string.dismiss_error)
         buttonClickListener = View.OnClickListener {
-            fragmentManager!!.beginTransaction().remove(this@ErrorFragment).commit()
+            parentFragmentManager.beginTransaction().remove(this@ErrorFragment).commit()
         }
     }
 

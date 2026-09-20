@@ -19,7 +19,21 @@
             android:layout_height="100dp"
             android:background="#2A2A2A">
 
-            <!-- 占位图片，在视频加载前显示 -->
+            <!-- A channel-specific fallback, shown when the playlist has no logo. -->
+            <TextView
+                android:id="@+id/channel_placeholder"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/channel_placeholder"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:padding="12dp"
+                android:textColor="#EAF2FF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <!-- Playlist-provided channel logo, when available. -->
             <ImageView
                 android:id="@+id/channel_image"
                 android:layout_width="match_parent"
@@ -49,7 +63,7 @@
                 android:paddingTop="3dp"
                 android:paddingEnd="6dp"
                 android:paddingBottom="3dp"
-                android:text="LIVE"
+                android:text="@string/live_badge"
                 android:textColor="#FFFFFF"
                 android:textSize="10sp"
                 android:textStyle="bold"

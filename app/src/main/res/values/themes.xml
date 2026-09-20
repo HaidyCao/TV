@@ -2,7 +2,7 @@
 <resources>
     <style name="Theme.TV" parent="@style/Theme.Leanback" />
     
-    <style name="Theme.TV.Playback" parent="Theme.AppCompat">
+    <style name="Theme.TV.Playback" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
     

@@ -52,4 +52,5 @@ dependencies {
     implementation(libs.androidx.cardview)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.swiperefreshlayout)
+    testImplementation("junit:junit:4.13.2")
 }

@@ -1,6 +1,5 @@
 package com.android.tv
 
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.LayoutInflater
@@ -8,9 +7,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.core.net.toUri
+import androidx.core.os.BundleCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.ui.PlayerView
@@ -27,13 +29,16 @@ class PlaybackVideoFragment : Fragment() {
         return inflater.inflate(R.layout.activity_playback, container, false)
     }
 
+    @UnstableApi
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
         val playerView = view.findViewById<PlayerView>(R.id.player_view)
         playerView.useController = true
 
-        val movie = activity?.intent?.extras?.getSerializable(DetailsActivity.MOVIE) as? Movie
+        val movie = activity?.intent?.extras?.let {
+            BundleCompat.getSerializable(it, DetailsActivity.MOVIE, Movie::class.java)
+        }
         val videoUrl = movie?.videoUrl
 
         Log.d("Playback", "videoUrl: $videoUrl")
@@ -64,7 +69,7 @@ class PlaybackVideoFragment : Fragment() {
             repeatMode = Player.REPEAT_MODE_OFF
 
             Log.d("Playback", "Setting media item")
-            setMediaItem(MediaItem.fromUri(Uri.parse(videoUrl)))
+            setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
             prepare()
         }
 

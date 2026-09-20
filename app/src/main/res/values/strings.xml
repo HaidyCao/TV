@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">TV</string>
-    <string name="browse_title">Videos by Your Company</string>
+    <string name="browse_title">电视直播</string>
     <string name="related_movies">Related Videos</string>
     <string name="grid_view">Grid View</string>
     <string name="error_fragment">Error Fragment</string>
@@ -22,4 +22,26 @@
     <string name="no_results">未找到相关频道</string>
     <string name="all_channels">全部频道 (%d)</string>
     <string name="search_results">搜索结果 (%d)</string>
+    <string name="channel_loading">正在加载频道…</string>
+    <string name="channel_empty">当前节目源没有可播放频道</string>
+    <string name="channel_offline_snapshot">网络不可用，正在显示上次成功加载的频道</string>
+    <string name="channel_status">状态</string>
+    <string name="settings_header">设置</string>
+
+    <!-- Source settings -->
+    <string name="settings_source_title">设置直播源地址</string>
+    <string name="source_url_hint">输入 .m3u 或 .txt 链接</string>
+    <string name="save_and_refresh">保存并刷新</string>
+    <string name="source_format_hint">多个视频地址格式建议：\n1. TXT：频道名,URL\n2. M3U：#EXTM3U 标准格式</string>
+    <string name="source_saved_refreshing">已保存，正在刷新节目单</string>
+    <string name="source_url_invalid">请输入有效的 HTTP 或 HTTPS 节目源地址</string>
+    <string name="playback_error">播放失败，请检查网络或切换频道后重试</string>
+
+    <!-- Phone browse -->
+    <string name="phone_browse_title">电视直播</string>
+    <string name="live_badge">直播</string>
+    <string name="channel_placeholder_label">TV</string>
+    <string name="menu_search">搜索</string>
+    <string name="menu_layout">布局</string>
+    <string name="menu_settings">设置</string>
 </resources>
