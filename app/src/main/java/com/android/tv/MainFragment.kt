@@ -45,6 +45,7 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var metrics: DisplayMetrics
     private var backgroundUri: String? = null
     private var previewFrameManager: PreviewFrameManager? = null
+    private var livePreviewFrameStore: LivePreviewFrameStore? = null
     private var tvChannelPreviewController: TvChannelPreviewController? = null
     private var focusedPreviewMovie: Movie? = null
     private var focusedPreviewHolder: CardPresenter.CardViewHolder? = null
@@ -56,7 +57,11 @@ class MainFragment : BrowseSupportFragment() {
         super.onViewCreated(view, savedInstanceState)
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
-        tvChannelPreviewController = TvChannelPreviewController(requireContext())
+        livePreviewFrameStore = LivePreviewFrameStore()
+        tvChannelPreviewController = TvChannelPreviewController(
+            requireContext(),
+            frameStore = livePreviewFrameStore!!
+        )
         prepareBackgroundManager()
         setupUiElements()
         setupEventListeners()
@@ -96,6 +101,8 @@ class MainFragment : BrowseSupportFragment() {
         focusedPreviewHolder = null
         previewFrameManager?.release()
         previewFrameManager = null
+        livePreviewFrameStore?.clear()
+        livePreviewFrameStore = null
         super.onDestroyView()
     }
 
@@ -154,6 +161,7 @@ class MainFragment : BrowseSupportFragment() {
         val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
         val cardPresenter = CardPresenter(
             previewFrameManager = previewFrameManager,
+            livePreviewFrameStore = livePreviewFrameStore,
             isFavorite = { channel -> ChannelFavorites.isFavorite(channel, favoriteKeys) },
             onFavoriteToggle = ::toggleFavorite,
             onCardUnbound = ::onCardUnbound,

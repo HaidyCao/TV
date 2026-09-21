@@ -2,6 +2,7 @@ package com.android.tv
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -20,7 +21,8 @@ import androidx.media3.exoplayer.ExoPlayer
 @SuppressLint("UnsafeOptInUsageError")
 internal class TvChannelPreviewController(
     context: Context,
-    private val handler: Handler = Handler(Looper.getMainLooper())
+    private val handler: Handler = Handler(Looper.getMainLooper()),
+    private val frameStore: LivePreviewFrameStore = LivePreviewFrameStore()
 ) {
     private val appContext = context.applicationContext
     private val generation = TvChannelPreviewGeneration()
@@ -31,6 +33,9 @@ internal class TvChannelPreviewController(
     private var activeListener: Player.Listener? = null
     private var activeHolder: CardPresenter.CardViewHolder? = null
     private var activeTextureView: android.view.TextureView? = null
+    private var activeMovieKey: String? = null
+    private var activeVideoUrl: String? = null
+    private var hasRenderedFirstFrame = false
     private var activeToken: Long = 0L
 
     /** Schedules a muted preview for the currently focused live card. */
@@ -68,17 +73,49 @@ internal class TvChannelPreviewController(
         val oldListener = activeListener
         val oldHolder = activeHolder
         val oldTexture = activeTextureView
+        val oldMovieKey = activeMovieKey
+        val oldVideoUrl = activeVideoUrl
+        val oldHasRenderedFirstFrame = hasRenderedFirstFrame
+
+        // TextureView.getBitmap() must run before the player detaches or releases
+        // the surface. Only a confirmed first frame from the still-bound holder
+        // is eligible for the shared cache.
+        val lastFrame = if (oldHasRenderedFirstFrame && oldHolder != null &&
+            oldTexture != null && oldMovieKey != null && oldVideoUrl != null &&
+            oldHolder.isBoundTo(oldMovieKey)
+        ) {
+            captureRenderedFrame(oldTexture)
+        } else {
+            null
+        }
+
         if (oldPlayer != null && oldListener != null) {
             oldPlayer.removeListener(oldListener)
         }
         activeListener = null
+        activeHolder = null
+        activeTextureView = null
+        activeMovieKey = null
+        activeVideoUrl = null
+        hasRenderedFirstFrame = false
+        activeToken = 0L
+
         if (oldPlayer != null && oldTexture != null) {
             runCatching { oldPlayer.clearVideoTextureView(oldTexture) }
         }
-        oldHolder?.resetPreviewLayer()
-        activeHolder = null
-        activeTextureView = null
-        activeToken = 0L
+        if (oldHolder != null && oldMovieKey != null) {
+            if (lastFrame != null) {
+                // The active card keeps its frame even if the bitmap is too
+                // large for the shared cache; the cache only serves future
+                // bindings of this URL.
+                oldVideoUrl?.let { frameStore.put(it, lastFrame) }
+                oldHolder.showCapturedPreviewFrame(oldMovieKey, lastFrame)
+            } else {
+                // Keep the existing logo/card image when the surface did not
+                // produce a valid frame or the holder was rebound meanwhile.
+                oldHolder.resetPreviewLayerIfBound(oldMovieKey)
+            }
+        }
 
         oldPlayer?.let {
             runCatching { it.stop() }
@@ -123,6 +160,9 @@ internal class TvChannelPreviewController(
         // failure also resets the holder and removes the just-created texture.
         activeHolder = holder
         activeTextureView = textureView
+        activeMovieKey = previewKey(movie)
+        activeVideoUrl = videoUrl
+        hasRenderedFirstFrame = false
         activeToken = token
         val previewPlayer = player ?: try {
             PreviewPlayerFactory.create(appContext).also { createdPlayer ->
@@ -142,6 +182,7 @@ internal class TvChannelPreviewController(
                     generation.isCurrent(token)
                 ) {
                     Log.d(TAG, "first-frame ${logLabel(movie)}")
+                    hasRenderedFirstFrame = true
                     holder.showPreviewFrame()
                 }
             }
@@ -169,6 +210,18 @@ internal class TvChannelPreviewController(
 
     private fun logLabel(movie: Movie): String {
         return movie.title.orEmpty().take(40).ifBlank { "channel" }
+    }
+
+    private fun previewKey(movie: Movie): String {
+        return "${movie.id}:${movie.videoUrl.orEmpty()}"
+    }
+
+    private fun captureRenderedFrame(textureView: android.view.TextureView): Bitmap? {
+        return runCatching { textureView.bitmap }
+            .getOrNull()
+            ?.takeIf { bitmap ->
+                !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0
+            }
     }
 
     companion object {

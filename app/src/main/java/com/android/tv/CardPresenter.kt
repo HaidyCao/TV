@@ -20,6 +20,7 @@ import kotlin.properties.Delegates
  */
 class CardPresenter(
     private val previewFrameManager: PreviewFrameManager? = null,
+    private val livePreviewFrameStore: LivePreviewFrameStore? = null,
     private val isFavorite: (Movie) -> Boolean = { false },
     private val onFavoriteToggle: ((Movie) -> Unit)? = null,
     private val onCardUnbound: ((CardViewHolder) -> Unit)? = null,
@@ -59,6 +60,7 @@ class CardPresenter(
         holder.setCardFocusChangedListener(null)
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
+        holder.clearCardBinding()
         if (item == null) return
         val movie = item as Movie
         val cardView = holder.cardView
@@ -84,15 +86,25 @@ class CardPresenter(
             onCardFocusChanged?.invoke(movie, holder, hasFocus)
         }
         
-        val imageView = cardView.mainImageView ?: return
         val requestKey = "${movie.id}:${movie.videoUrl.orEmpty()}"
+        holder.bindCard(requestKey)
+        val imageView = cardView.mainImageView ?: return
         imageView.tag = requestKey
         imageView.visibility = View.VISIBLE
 
-        // IPTV/live cards must never open their stream just to paint a thumbnail.
-        // They use a playlist-provided logo or local fallback artwork instead.
         val videoUrl = movie.videoUrl
-        if (!movie.isLive && previewFrameManager != null && !videoUrl.isNullOrBlank()) {
+        val cachedLiveFrame = if (movie.isLive && !videoUrl.isNullOrBlank()) {
+            livePreviewFrameStore?.get(videoUrl)
+        } else {
+            null
+        }
+        if (cachedLiveFrame != null) {
+            // A frame came from the focused live preview. It is safe to reuse
+            // it without opening another stream for this card.
+            Glide.with(imageView).clear(imageView)
+            imageView.setImageBitmap(cachedLiveFrame)
+        } else if (!movie.isLive && previewFrameManager != null && !videoUrl.isNullOrBlank()) {
+            // Finite videos retain their existing on-demand frame extraction.
             Glide.with(imageView).clear(imageView)
             imageView.setImageDrawable(mDefaultCardImage)
             previewFrameManager.getPreviewFrame(videoUrl) { bitmap: Bitmap? ->
@@ -128,6 +140,7 @@ class CardPresenter(
         holder.setCardFocusChangedListener(null)
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
+        holder.clearCardBinding()
         val cardView = holder.cardView
         // Remove references to images so that the garbage collector can free up memory
         cardView.mainImageView?.let { imageView ->
@@ -154,9 +167,35 @@ class CardPresenter(
 
         fun resetPreviewLayer() = cardView.resetPreviewLayer()
 
+        internal fun bindCard(requestKey: String) {
+            boundRequestKey = requestKey
+        }
+
+        internal fun clearCardBinding() {
+            boundRequestKey = null
+        }
+
+        internal fun isBoundTo(requestKey: String): Boolean {
+            return boundRequestKey == requestKey
+        }
+
+        internal fun showCapturedPreviewFrame(requestKey: String, bitmap: Bitmap): Boolean {
+            if (!isBoundTo(requestKey)) return false
+            cardView.showCapturedPreviewFrame(bitmap)
+            return true
+        }
+
+        internal fun resetPreviewLayerIfBound(requestKey: String): Boolean {
+            if (!isBoundTo(requestKey)) return false
+            cardView.resetPreviewLayer()
+            return true
+        }
+
         fun setCardFocusChangedListener(listener: ((Boolean) -> Unit)?) {
             cardView.setCardFocusChangedListener(listener)
         }
+
+        private var boundRequestKey: String? = null
     }
 
     /**
@@ -241,6 +280,14 @@ class CardPresenter(
             }
             mainImageView?.alpha = 1f
             mainImageView?.visibility = View.VISIBLE
+        }
+
+        fun showCapturedPreviewFrame(bitmap: Bitmap) {
+            resetPreviewLayer()
+            mainImageView?.let { imageView ->
+                Glide.with(imageView).clear(imageView)
+                imageView.setImageBitmap(bitmap)
+            }
         }
 
         fun resetPreviewLayer() {
