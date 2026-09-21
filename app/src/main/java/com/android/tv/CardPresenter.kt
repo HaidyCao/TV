@@ -2,7 +2,6 @@ package com.android.tv
 
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
-import android.view.Gravity
 import androidx.leanback.widget.BaseCardView
 import androidx.leanback.widget.ImageCardView
 import androidx.leanback.widget.Presenter
@@ -184,20 +183,23 @@ class CardPresenter(
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-            previewTextureView?.measure(
-                MeasureSpec.makeMeasureSpec(CARD_WIDTH, MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(CARD_HEIGHT, MeasureSpec.EXACTLY)
-            )
         }
 
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
             super.onLayout(changed, left, top, right, bottom)
-            previewTextureView?.layout(
-                paddingLeft,
-                paddingTop,
-                paddingLeft + CARD_WIDTH,
-                paddingTop + CARD_HEIGHT
-            )
+            // Measure the display in a second phase so BaseCardView excludes it from content stacking.
+            previewTextureView?.let { textureView ->
+                textureView.measure(
+                    MeasureSpec.makeMeasureSpec(CARD_WIDTH, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(CARD_HEIGHT, MeasureSpec.EXACTLY)
+                )
+                textureView.layout(
+                    paddingLeft,
+                    paddingTop,
+                    paddingLeft + CARD_WIDTH,
+                    paddingTop + CARD_HEIGHT
+                )
+            }
         }
 
         fun ensurePreviewTexture(): TextureView {
@@ -208,11 +210,7 @@ class CardPresenter(
             }
 
             return TextureView(context).also { textureView ->
-                // Mark the preview overlay as EXTRA so Leanback does not include it in card height.
-                textureView.layoutParams = BaseCardView.LayoutParams(CARD_WIDTH, CARD_HEIGHT).apply {
-                    gravity = Gravity.TOP or Gravity.START
-                    viewType = BaseCardView.LayoutParams.VIEW_TYPE_EXTRA
-                }
+                textureView.layoutParams = BaseCardView.LayoutParams(CARD_WIDTH, 0)
                 textureView.isFocusable = false
                 textureView.isFocusableInTouchMode = false
                 textureView.isClickable = false
