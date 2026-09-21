@@ -57,6 +57,7 @@
         <activity
             android:name=".PlaybackActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:theme="@style/Theme.TV.Playback" />
         <activity
             android:name=".SettingsActivity"

@@ -99,4 +99,17 @@ object ChannelRepository {
     fun invalidate() {
         loadedSourceUrl = null
     }
+
+    /**
+     * Returns the current playlist order for in-player channel navigation.
+     * Reading StateFlow.value is safe here because every emitted collection is
+     * immutable after publication.
+     */
+    fun liveChannels(): List<Movie> {
+        return mutableState.value.groups.values
+            .asSequence()
+            .flatten()
+            .filter { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+            .toList()
+    }
 }

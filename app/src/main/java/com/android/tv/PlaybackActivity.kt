@@ -1,7 +1,12 @@
 package com.android.tv
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.view.KeyEvent
+import android.view.View
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
@@ -20,6 +25,14 @@ import androidx.media3.ui.PlayerView
 class PlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
+    private var currentChannel: Movie? = null
+    private val overlayHandler = Handler(Looper.getMainLooper())
+    private var hideChannelOverlay: Runnable? = null
+
+    private lateinit var playerView: PlayerView
+    private lateinit var channelOverlay: View
+    private lateinit var channelTitle: TextView
+    private lateinit var channelCategory: TextView
 
     @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,16 +40,23 @@ class PlaybackActivity : AppCompatActivity() {
         enableImmersivePlayback()
         setContentView(R.layout.activity_playback)
 
-        val playerView = findViewById<PlayerView>(R.id.player_view)
+        playerView = findViewById(R.id.player_view)
+        channelOverlay = findViewById(R.id.channel_switch_overlay)
+        channelTitle = findViewById(R.id.channel_switch_title)
+        channelCategory = findViewById(R.id.channel_switch_category)
 
         val movie = BundleCompat.getSerializable(
             intent.extras ?: Bundle(),
             DetailsActivity.MOVIE,
             Movie::class.java
         )
-        val videoUrl = movie?.videoUrl
+        val initialChannel = movie ?: run {
+            finish()
+            return
+        }
+        val videoUrl = initialChannel.videoUrl
 
-        Log.d("PlaybackActivity", "Opening channel: ${movie?.title}")
+        Log.d("PlaybackActivity", "Opening channel: ${initialChannel.title}")
 
         if (videoUrl.isNullOrEmpty()) {
             Log.e("PlaybackActivity", "Video URL is null or empty!")
@@ -86,12 +106,11 @@ class PlaybackActivity : AppCompatActivity() {
                     }
                 })
 
-                setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
-                prepare()
-                playWhenReady = true
             }
 
         playerView.player = player
+        playChannel(initialChannel)
+        ChannelRepository.ensureLoaded(this)
     }
 
     override fun onPause() {
@@ -104,10 +123,64 @@ class PlaybackActivity : AppCompatActivity() {
         if (hasFocus) enableImmersivePlayback()
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_CHANNEL_UP,
+                KeyEvent.KEYCODE_PAGE_UP -> {
+                    switchChannel(direction = -1)
+                    return true
+                }
+
+                KeyEvent.KEYCODE_CHANNEL_DOWN,
+                KeyEvent.KEYCODE_PAGE_DOWN -> {
+                    switchChannel(direction = 1)
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDestroy() {
+        hideChannelOverlay?.let(overlayHandler::removeCallbacks)
         super.onDestroy()
         player?.release()
         player = null
+    }
+
+    private fun switchChannel(direction: Int) {
+        val current = currentChannel ?: return
+        val nextChannel = ChannelPlaybackNavigator.adjacent(
+            current = current,
+            channels = ChannelRepository.liveChannels(),
+            direction = direction
+        )
+        if (nextChannel == null) {
+            Toast.makeText(this, R.string.channel_switch_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        playChannel(nextChannel, showOverlay = true)
+    }
+
+    private fun playChannel(channel: Movie, showOverlay: Boolean = false) {
+        val videoUrl = channel.videoUrl ?: return
+        currentChannel = channel
+        player?.apply {
+            setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
+            prepare()
+            play()
+        }
+        if (showOverlay) showChannelOverlay(channel)
+    }
+
+    private fun showChannelOverlay(channel: Movie) {
+        channelTitle.text = channel.title
+        channelCategory.text = channel.category ?: getString(R.string.live_badge)
+        channelOverlay.visibility = View.VISIBLE
+        hideChannelOverlay?.let(overlayHandler::removeCallbacks)
+        hideChannelOverlay = Runnable { channelOverlay.visibility = View.GONE }
+        overlayHandler.postDelayed(hideChannelOverlay!!, CHANNEL_OVERLAY_DURATION_MS)
     }
 
     private fun enableImmersivePlayback() {
@@ -116,5 +189,9 @@ class PlaybackActivity : AppCompatActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+    }
+
+    private companion object {
+        const val CHANNEL_OVERLAY_DURATION_MS = 2_500L
     }
 }

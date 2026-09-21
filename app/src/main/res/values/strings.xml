@@ -36,6 +36,8 @@
     <string name="source_saved_refreshing">已保存，正在刷新节目单</string>
     <string name="source_url_invalid">请输入有效的 HTTP 或 HTTPS 节目源地址</string>
     <string name="playback_error">播放失败，请检查网络或切换频道后重试</string>
+    <string name="channel_switch_label">正在切换至</string>
+    <string name="channel_switch_unavailable">没有可切换的频道</string>
 
     <!-- Phone browse -->
     <string name="phone_browse_title">电视直播</string>
