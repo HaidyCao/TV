@@ -28,6 +28,17 @@ data class TvChannelFetchResult(
     val updatedAtMillis: Long
 )
 
+data class TvSourceCheckResult(
+    val channelCount: Int,
+    val groupCount: Int
+)
+
+data class TvCachedSourceInfo(
+    val channelCount: Int,
+    val groupCount: Int,
+    val updatedAtMillis: Long
+)
+
 object TvDataManager {
     const val DEFAULT_TV_LIST_URL = "https://raw.githubusercontent.com/HaidyCao/configs/refs/heads/main/tvlist.txt"
 
@@ -69,6 +80,69 @@ object TvDataManager {
     fun isValidSourceUrl(sourceUrl: String): Boolean {
         val uri = runCatching { Uri.parse(sourceUrl.trim()) }.getOrNull() ?: return false
         return uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()
+    }
+
+    /**
+     * Checks a candidate source without changing the saved source or snapshot.
+     * It deliberately does not use fetchTvChannels or the refresh gate.
+     */
+    suspend fun checkSource(
+        context: Context,
+        candidateUrl: String
+    ): TvSourceCheckResult {
+        val sourceUrl = candidateUrl.trim()
+        require(isValidSourceUrl(sourceUrl)) { "节目源地址必须是有效的 HTTP 或 HTTPS URL" }
+        return withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(sourceUrl)
+                .header("Accept", "application/x-mpegurl, audio/x-mpegurl, text/plain, */*")
+                .cacheControl(CacheControl.FORCE_NETWORK)
+                .build()
+            val content = executePlaylistRequest(client(context.applicationContext), request)
+            val groups = parsePlaylist(content)
+            val playableGroups = groups.filterValues { channels ->
+                channels.any { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+            }
+            if (playableGroups.isEmpty()) {
+                throw IOException("节目单为空或没有可播放频道")
+            }
+            TvSourceCheckResult(
+                channelCount = playableGroups.values.sumOf { channels ->
+                    channels.count { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+                },
+                groupCount = playableGroups.size
+            )
+        }
+    }
+
+    /** Reads only the usable snapshot belonging to the currently saved source. */
+    suspend fun readCachedSourceInfo(context: Context): TvCachedSourceInfo? {
+        return withContext(Dispatchers.IO) {
+            val appContext = context.applicationContext
+            val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val currentSource = getSourceUrl(appContext)
+            val cachedSource = prefs.getString(KEY_CACHED_SOURCE_URL, null)
+            val cachedPlaylist = prefs.getString(KEY_CACHED_PLAYLIST, null)
+            val updatedAtMillis = prefs.getLong(KEY_CACHED_AT, 0L)
+            if (cachedSource != currentSource || cachedPlaylist.isNullOrBlank() || updatedAtMillis <= 0L) {
+                return@withContext null
+            }
+
+            val groups = runCatching { parsePlaylist(cachedPlaylist) }.getOrNull() ?: return@withContext null
+            if (!PlaylistSnapshotPolicy.shouldUseSnapshot(currentSource, cachedSource, groups)) {
+                return@withContext null
+            }
+            val playableGroups = groups.filterValues { channels ->
+                channels.any { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+            }
+            TvCachedSourceInfo(
+                channelCount = playableGroups.values.sumOf { channels ->
+                    channels.count { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+                },
+                groupCount = playableGroups.size,
+                updatedAtMillis = updatedAtMillis
+            )
+        }
     }
 
     suspend fun fetchTvChannels(

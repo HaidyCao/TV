@@ -46,6 +46,8 @@ class MainFragment : BrowseSupportFragment() {
     private var backgroundUri: String? = null
     private var previewFrameManager: PreviewFrameManager? = null
     private var tvChannelPreviewController: TvChannelPreviewController? = null
+    private var focusedPreviewMovie: Movie? = null
+    private var focusedPreviewHolder: CardPresenter.CardViewHolder? = null
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
     private var latestStatusMessage: String? = null
@@ -64,6 +66,15 @@ class MainFragment : BrowseSupportFragment() {
 
     override fun onResume() {
         super.onResume()
+        if (!ChannelPreviewPreferences.isEnabled(requireContext())) {
+            tvChannelPreviewController?.stop()
+        } else {
+            val movie = focusedPreviewMovie
+            val holder = focusedPreviewHolder
+            if (movie != null && holder != null && holder.cardView.hasFocus()) {
+                tvChannelPreviewController?.schedule(movie, holder)
+            }
+        }
         val updatedFavorites = ChannelFavorites.favoriteKeys(requireContext())
         if (updatedFavorites != favoriteKeys) {
             favoriteKeys = updatedFavorites
@@ -81,6 +92,8 @@ class MainFragment : BrowseSupportFragment() {
         backgroundUpdate = null
         tvChannelPreviewController?.release()
         tvChannelPreviewController = null
+        focusedPreviewMovie = null
+        focusedPreviewHolder = null
         previewFrameManager?.release()
         previewFrameManager = null
         super.onDestroyView()
@@ -129,6 +142,8 @@ class MainFragment : BrowseSupportFragment() {
         statusMessage: String?
     ) {
         tvChannelPreviewController?.stop()
+        focusedPreviewMovie = null
+        focusedPreviewHolder = null
         latestGroups = tvGroups
         latestStatusMessage = statusMessage
         val channels = tvGroups.values.flatten()
@@ -141,9 +156,16 @@ class MainFragment : BrowseSupportFragment() {
             previewFrameManager = previewFrameManager,
             isFavorite = { channel -> ChannelFavorites.isFavorite(channel, favoriteKeys) },
             onFavoriteToggle = ::toggleFavorite,
-            onCardUnbound = { holder -> tvChannelPreviewController?.stopIfAttached(holder) },
+            onCardUnbound = ::onCardUnbound,
             onCardFocusChanged = { movie, holder, hasFocus ->
                 if (hasFocus) {
+                    focusedPreviewMovie = movie
+                    focusedPreviewHolder = holder
+                } else if (focusedPreviewHolder === holder) {
+                    focusedPreviewMovie = null
+                    focusedPreviewHolder = null
+                }
+                if (hasFocus && ChannelPreviewPreferences.isEnabled(holder.cardView.context)) {
                     tvChannelPreviewController?.schedule(movie, holder)
                 } else {
                     tvChannelPreviewController?.stopIfAttached(holder)
@@ -184,6 +206,14 @@ class MainFragment : BrowseSupportFragment() {
             )
         )
         adapter = rowsAdapter
+    }
+
+    private fun onCardUnbound(holder: CardPresenter.CardViewHolder) {
+        if (focusedPreviewHolder === holder) {
+            focusedPreviewMovie = null
+            focusedPreviewHolder = null
+        }
+        tvChannelPreviewController?.stopIfAttached(holder)
     }
 
     private fun toggleFavorite(channel: Movie) {

@@ -37,6 +37,7 @@ class PhoneChannelAdapter(
     private var previewHolder: ViewHolder? = null
     private var previewTask: Runnable? = null
     private var favoriteKeys: Set<String> = emptySet()
+    private var previewEnabled = true
 
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
@@ -55,6 +56,23 @@ class PhoneChannelAdapter(
         schedulePreviewUpdate()
     }
 
+    fun setPreviewEnabled(enabled: Boolean) {
+        if (previewEnabled == enabled) {
+            if (!enabled) {
+                cancelScheduledPreview()
+                clearPreview(releasePlayer = true)
+            }
+            return
+        }
+        previewEnabled = enabled
+        if (enabled) {
+            schedulePreviewUpdate()
+        } else {
+            cancelScheduledPreview()
+            clearPreview(releasePlayer = true)
+        }
+    }
+
     fun refreshPlayers() = schedulePreviewUpdate()
 
     fun updateFavorites(newFavoriteKeys: Set<String>) {
@@ -69,6 +87,7 @@ class PhoneChannelAdapter(
 
     fun schedulePreviewUpdate() {
         cancelScheduledPreview()
+        if (!previewEnabled) return
         previewTask = Runnable { startPreviewForViewportCenter() }
         recyclerView?.postDelayed(previewTask!!, PREVIEW_DELAY_MS)
     }
@@ -89,6 +108,10 @@ class PhoneChannelAdapter(
     }
 
     private fun startPreviewForViewportCenter() {
+        if (!previewEnabled) {
+            clearPreview(releasePlayer = true)
+            return
+        }
         val recycler = recyclerView ?: return
         if (recycler.scrollState != RecyclerView.SCROLL_STATE_IDLE) return
 
@@ -121,6 +144,10 @@ class PhoneChannelAdapter(
     }
 
     private fun attachPreview(holder: ViewHolder) {
+        if (!previewEnabled) {
+            clearPreview(releasePlayer = true)
+            return
+        }
         val movie = holder.movie ?: return
         val videoUrl = movie.videoUrl ?: return
         clearPreview()

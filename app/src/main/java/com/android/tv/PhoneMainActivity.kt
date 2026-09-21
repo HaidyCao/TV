@@ -55,6 +55,7 @@ class PhoneMainActivity : AppCompatActivity() {
             onToggleFavorite = ::toggleFavorite,
             initialPlayerPoolSize = 1
         )
+        adapter.setPreviewEnabled(ChannelPreviewPreferences.isEnabled(this))
         adapter.updateFavorites(favoriteKeys)
         recyclerView.adapter = adapter
         recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
@@ -83,6 +84,7 @@ class PhoneMainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshFavoriteKeys()
+        adapter.setPreviewEnabled(ChannelPreviewPreferences.isEnabled(this))
         adapter.schedulePreviewUpdate()
     }
 
