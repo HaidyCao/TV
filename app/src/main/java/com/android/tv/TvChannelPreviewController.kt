@@ -61,6 +61,10 @@ internal class TvChannelPreviewController(
         pendingHolder = null
 
         val oldPlayer = player
+        // Clear the field before touching ExoPlayer. Releasing can synchronously
+        // dispatch callbacks; a re-entrant stop must not release the same player
+        // twice or mistake it for a newly scheduled preview.
+        player = null
         val oldListener = activeListener
         val oldHolder = activeHolder
         val oldTexture = activeTextureView
@@ -77,10 +81,11 @@ internal class TvChannelPreviewController(
         activeToken = 0L
 
         oldPlayer?.let {
-            runCatching {
-                it.stop()
-                it.clearMediaItems()
-            }
+            runCatching { it.stop() }
+            runCatching { it.clearMediaItems() }
+            // Keep release independent from stop/clear: a broken codec state
+            // must not prevent the native player from being disposed.
+            runCatching { it.release() }
         }
         if (oldHolder != null || oldTexture != null) {
             Log.d(TAG, "stop")
@@ -90,8 +95,6 @@ internal class TvChannelPreviewController(
     /** Stops and releases the player when the browse view is destroyed. */
     fun release() {
         stop()
-        player?.release()
-        player = null
     }
 
     /** Called by CardPresenter before a holder is rebound or recycled. */
@@ -116,16 +119,23 @@ internal class TvChannelPreviewController(
         if (!generation.isCurrent(token) || !isValidSelection(movie, holder)) return
         val videoUrl = movie.videoUrl ?: return
         val textureView = holder.ensurePreviewTexture()
-        val previewPlayer = player ?: PlaybackPlayerFactory.create(appContext).also { createdPlayer ->
-            createdPlayer.volume = 0f
-            createdPlayer.repeatMode = Player.REPEAT_MODE_OFF
-            player = createdPlayer
-        }
-        previewPlayer.volume = 0f
-
+        // Mark the surface before creating the player so a factory/setup
+        // failure also resets the holder and removes the just-created texture.
         activeHolder = holder
         activeTextureView = textureView
         activeToken = token
+        val previewPlayer = player ?: try {
+            PreviewPlayerFactory.create(appContext).also { createdPlayer ->
+                createdPlayer.repeatMode = Player.REPEAT_MODE_OFF
+                player = createdPlayer
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "error setup", error)
+            stop()
+            return
+        }
+        previewPlayer.volume = 0f
+
         activeListener = object : Player.Listener {
             override fun onRenderedFirstFrame() {
                 if (player === previewPlayer && activeToken == token && activeHolder === holder &&

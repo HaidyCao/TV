@@ -152,8 +152,7 @@ class PhoneChannelAdapter(
         val videoUrl = movie.videoUrl ?: return
         clearPreview()
 
-        val player = previewPlayer ?: ExoPlayer.Builder(holder.itemView.context).build().also { createdPlayer ->
-            createdPlayer.volume = 0f
+        val player = previewPlayer ?: PreviewPlayerFactory.create(holder.itemView.context).also { createdPlayer ->
             createdPlayer.repeatMode = Player.REPEAT_MODE_OFF
             createdPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
