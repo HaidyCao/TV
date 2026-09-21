@@ -52,4 +52,6 @@
 
     </LinearLayout>
 
+    <include layout="@layout/playback_status_overlay" />
+
 </FrameLayout>

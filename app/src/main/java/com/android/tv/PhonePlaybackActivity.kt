@@ -2,7 +2,9 @@ package com.android.tv
 
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
+import android.view.View
+import android.widget.Button
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import androidx.core.os.BundleCompat
@@ -14,98 +16,171 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.ui.PlayerView
 
 class PhonePlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
+    private var currentChannel: Movie? = null
+    private var playbackUiState = PlaybackUiState.CONNECTING
+
+    private lateinit var playerView: PlayerView
+    private lateinit var statusOverlay: View
+    private lateinit var statusMessage: TextView
+    private lateinit var statusActionRow: View
+    private lateinit var retryButton: Button
+    private lateinit var backButton: Button
 
     @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        val movie = BundleCompat.getSerializable(intent.extras ?: Bundle(), "channel", Movie::class.java)
-        val videoUrl = movie?.videoUrl
+        setContentView(R.layout.activity_phone_playback)
+        bindViews()
+        enableImmersivePlayback()
 
-        Log.d("PhonePlayback", "Playing: ${movie?.title}")
+        retryButton.setOnClickListener { retryCurrentChannel() }
+        backButton.setOnClickListener { finish() }
+        renderPlaybackState()
 
-        if (videoUrl.isNullOrEmpty()) {
-            finish()
+        val initialChannel = BundleCompat.getSerializable(
+            intent.extras ?: Bundle(),
+            EXTRA_CHANNEL,
+            Movie::class.java
+        )
+        if (initialChannel == null) {
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
             return
         }
 
-        // Fullscreen playback without deprecated system-ui flags.
+        val videoUrl = initialChannel.videoUrl
+        Log.d(TAG, "Playing: ${initialChannel.title}")
+        if (videoUrl.isNullOrBlank()) {
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
+            return
+        }
+        currentChannel = initialChannel
+
+        player = PlaybackPlayerFactory.create(this).also { createdPlayer ->
+            createdPlayer.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(state: Int) {
+                    if (playbackUiState != PlaybackUiState.ERROR) {
+                        updatePlaybackState(state, createdPlayer.isPlaying)
+                    }
+                }
+
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (playbackUiState != PlaybackUiState.ERROR) {
+                        updatePlaybackState(createdPlayer.playbackState, isPlaying)
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    Log.e(TAG, "Player error: ${error.errorCodeName} (${error.message})")
+                    showPlaybackError(
+                        getString(playbackFailureCategory(error).messageResId()),
+                        canRetry = true
+                    )
+                }
+            })
+            createdPlayer.setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
+            playerView.player = createdPlayer
+        }
+        player?.prepare()
+        player?.playWhenReady = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        enableImmersivePlayback()
+        if (playbackUiState != PlaybackUiState.ERROR && currentChannel != null) {
+            player?.play()
+        }
+    }
+
+    override fun onPause() {
+        player?.pause()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        playerView.player = null
+        player?.release()
+        player = null
+        super.onDestroy()
+    }
+
+    private fun bindViews() {
+        playerView = findViewById(R.id.player_view)
+        statusOverlay = findViewById(R.id.playback_status_overlay)
+        statusMessage = findViewById(R.id.playback_status_message)
+        statusActionRow = findViewById(R.id.playback_action_row)
+        retryButton = findViewById(R.id.playback_retry)
+        backButton = findViewById(R.id.playback_back)
+    }
+
+    private fun retryCurrentChannel() {
+        val channel = currentChannel
+        val videoUrl = channel?.videoUrl
+        if (videoUrl.isNullOrBlank()) {
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
+            return
+        }
+        playbackUiState = PlaybackUiState.CONNECTING
+        renderPlaybackState()
+        player?.apply {
+            stop()
+            setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    private fun updatePlaybackState(playerState: Int, isPlaying: Boolean) {
+        playbackUiState = PlaybackStateMapper.fromPlayerState(playerState, isPlaying)
+        renderPlaybackState()
+    }
+
+    private fun showPlaybackError(message: String, canRetry: Boolean) {
+        playbackUiState = PlaybackUiState.ERROR
+        statusMessage.text = message
+        statusOverlay.visibility = View.VISIBLE
+        statusActionRow.visibility = View.VISIBLE
+        retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        backButton.visibility = View.VISIBLE
+    }
+
+    private fun renderPlaybackState() {
+        if (playbackUiState == PlaybackUiState.ERROR) return
+        statusOverlay.visibility = when (playbackUiState) {
+            PlaybackUiState.PLAYING,
+            PlaybackUiState.PAUSED -> View.GONE
+            else -> View.VISIBLE
+        }
+        val canRetry = playbackUiState == PlaybackUiState.ENDED
+        statusActionRow.visibility = if (canRetry) View.VISIBLE else View.GONE
+        retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        backButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        if (canRetry) retryButton.post { retryButton.requestFocus() }
+        statusMessage.text = when (playbackUiState) {
+            PlaybackUiState.CONNECTING -> getString(R.string.playback_connecting)
+            PlaybackUiState.BUFFERING -> getString(R.string.playback_buffering)
+            PlaybackUiState.ENDED -> getString(R.string.playback_ended)
+            PlaybackUiState.PLAYING,
+            PlaybackUiState.PAUSED,
+            PlaybackUiState.ERROR -> statusMessage.text
+        }
+    }
+
+    private fun enableImmersivePlayback() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-
-        val playerView = PlayerView(this)
-        playerView.setBackgroundColor(android.graphics.Color.BLACK)
-        playerView.layoutParams = android.view.ViewGroup.LayoutParams(
-            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-            android.view.ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        setContentView(playerView)
-
-        // 启用软解码器回退，并优先使用扩展（Jellyfin FFmpeg）以支持 MP2/AC3 等格式
-        val renderersFactory = DefaultRenderersFactory(this)
-            .setEnableDecoderFallback(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-
-        player = ExoPlayer.Builder(this, renderersFactory).build().apply {
-            addListener(object : Player.Listener {
-                override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                    Log.d("PhonePlayback", "Tracks changed:")
-                    tracks.groups.forEach { group ->
-                        val format = group.getTrackFormat(0)
-                        val type = group.type // 1: Audio, 2: Video
-                        val mime = format.sampleMimeType
-                        val isSupported = group.isTrackSupported(0)
-                        val isSelected = group.isSelected
-                        Log.d("PhonePlayback", "  - Type: $type, Mime: $mime, Supported: $isSupported, Selected: $isSelected")
-                        
-                        if (type == androidx.media3.common.C.TRACK_TYPE_AUDIO && isSelected && !isSupported) {
-                            Log.e("PhonePlayback", "Audio track selected but NOT SUPPORTED by device!")
-                        }
-                    }
-                }
-
-                override fun onPlayerError(error: PlaybackException) {
-                    Log.e("PhonePlayback", "Player Error: ${error.errorCodeName} (${error.errorCode}), message: ${error.message}")
-                    Toast.makeText(
-                        this@PhonePlaybackActivity,
-                        getString(R.string.playback_error),
-                        Toast.LENGTH_LONG
-                    ).show()
-                    if (error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED) {
-                        Log.e("PhonePlayback", "Decoding failed - likely missing codec")
-                    }
-                }
-
-                override fun onPlaybackStateChanged(state: Int) {
-                    Log.d("PhonePlayback", "State changed: $state")
-                }
-            })
-
-            setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
-            prepare()
-            playWhenReady = true
-        }
-        
-        playerView.player = player
     }
 
-    override fun onPause() {
-        super.onPause()
-        player?.pause()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        player?.release()
-        player = null
+    private companion object {
+        const val EXTRA_CHANNEL = "channel"
+        const val TAG = "PhonePlayback"
     }
 }

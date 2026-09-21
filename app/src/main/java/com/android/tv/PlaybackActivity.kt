@@ -6,6 +6,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -19,13 +20,13 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.ui.PlayerView
 
 class PlaybackActivity : AppCompatActivity() {
 
     private var player: ExoPlayer? = null
     private var currentChannel: Movie? = null
+    private var playbackUiState = PlaybackUiState.CONNECTING
     private val overlayHandler = Handler(Looper.getMainLooper())
     private var hideChannelOverlay: Runnable? = null
 
@@ -33,89 +34,82 @@ class PlaybackActivity : AppCompatActivity() {
     private lateinit var channelOverlay: View
     private lateinit var channelTitle: TextView
     private lateinit var channelCategory: TextView
+    private lateinit var statusOverlay: View
+    private lateinit var statusMessage: TextView
+    private lateinit var statusActionRow: View
+    private lateinit var retryButton: Button
+    private lateinit var backButton: Button
 
     @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableImmersivePlayback()
         setContentView(R.layout.activity_playback)
+        bindViews()
 
-        playerView = findViewById(R.id.player_view)
-        channelOverlay = findViewById(R.id.channel_switch_overlay)
-        channelTitle = findViewById(R.id.channel_switch_title)
-        channelCategory = findViewById(R.id.channel_switch_category)
+        retryButton.setOnClickListener { retryCurrentChannel() }
+        backButton.setOnClickListener { finish() }
+        renderPlaybackState()
 
-        val movie = BundleCompat.getSerializable(
+        val initialChannel = BundleCompat.getSerializable(
             intent.extras ?: Bundle(),
             DetailsActivity.MOVIE,
             Movie::class.java
         )
-        val initialChannel = movie ?: run {
-            finish()
+        if (initialChannel == null) {
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
             return
         }
+
         val videoUrl = initialChannel.videoUrl
-
-        Log.d("PlaybackActivity", "Opening channel: ${initialChannel.title}")
-
-        if (videoUrl.isNullOrEmpty()) {
-            Log.e("PlaybackActivity", "Video URL is null or empty!")
-            finish()
+        Log.d(TAG, "Opening channel: ${initialChannel.title}")
+        if (videoUrl.isNullOrBlank()) {
+            Log.e(TAG, "Video URL is null or empty")
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
             return
         }
+        currentChannel = initialChannel
 
-        // 启用软解码器回退，并优先选使用扩展（Jellyfin FFmpeg）以支持更多的音频编码
-        val renderersFactory = DefaultRenderersFactory(this)
-            .setEnableDecoderFallback(true) // 允许回退到软解码器
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-
-        player = ExoPlayer.Builder(this, renderersFactory)
-            .build().apply {
-                addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(state: Int) {
-                        val stateName = when(state) {
-                            Player.STATE_IDLE -> "STATE_IDLE"
-                            Player.STATE_BUFFERING -> "STATE_BUFFERING"
-                            Player.STATE_READY -> "STATE_READY"
-                            Player.STATE_ENDED -> "STATE_ENDED"
-                            else -> "UNKNOWN"
-                        }
-                        Log.d("PlaybackActivity", "Playback state: $state ($stateName)")
+        player = PlaybackPlayerFactory.create(this).also { createdPlayer ->
+            createdPlayer.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(state: Int) {
+                    if (playbackUiState != PlaybackUiState.ERROR) {
+                        updatePlaybackState(state, createdPlayer.isPlaying)
                     }
+                }
 
-                    override fun onPlayerError(error: PlaybackException) {
-                        Log.e("PlaybackActivity", "Player error: ${error.message}")
-                        Toast.makeText(
-                            this@PlaybackActivity,
-                            getString(R.string.playback_error),
-                            Toast.LENGTH_LONG
-                        ).show()
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (playbackUiState != PlaybackUiState.ERROR) {
+                        updatePlaybackState(createdPlayer.playbackState, isPlaying)
                     }
+                }
 
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        Log.d("PlaybackActivity", "Is playing: $isPlaying")
-                    }
+                override fun onPlayerError(error: PlaybackException) {
+                    Log.e(TAG, "Player error: ${error.errorCodeName} (${error.message})")
+                    showPlaybackError(
+                        getString(playbackFailureCategory(error).messageResId()),
+                        canRetry = true
+                    )
+                }
+            })
+            playerView.player = createdPlayer
+        }
 
-                    override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                        Log.d("PlaybackActivity", "Tracks changed:")
-                        tracks.groups.forEach { group ->
-                            val trackType = group.type
-                            val mimeType = group.getTrackFormat(0).sampleMimeType
-                            Log.d("PlaybackActivity", "  Track type: $trackType, mime: $mimeType, selected: ${group.isSelected}")
-                        }
-                    }
-                })
-
-            }
-
-        playerView.player = player
         playChannel(initialChannel)
         ChannelRepository.ensureLoaded(this)
     }
 
+    override fun onResume() {
+        super.onResume()
+        enableImmersivePlayback()
+        if (playbackUiState != PlaybackUiState.ERROR && currentChannel != null) {
+            player?.play()
+        }
+    }
+
     override fun onPause() {
-        super.onPause()
         player?.pause()
+        super.onPause()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -144,9 +138,22 @@ class PlaybackActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         hideChannelOverlay?.let(overlayHandler::removeCallbacks)
-        super.onDestroy()
+        playerView.player = null
         player?.release()
         player = null
+        super.onDestroy()
+    }
+
+    private fun bindViews() {
+        playerView = findViewById(R.id.player_view)
+        channelOverlay = findViewById(R.id.channel_switch_overlay)
+        channelTitle = findViewById(R.id.channel_switch_title)
+        channelCategory = findViewById(R.id.channel_switch_category)
+        statusOverlay = findViewById(R.id.playback_status_overlay)
+        statusMessage = findViewById(R.id.playback_status_message)
+        statusActionRow = findViewById(R.id.playback_action_row)
+        retryButton = findViewById(R.id.playback_retry)
+        backButton = findViewById(R.id.playback_back)
     }
 
     private fun switchChannel(direction: Int) {
@@ -163,15 +170,80 @@ class PlaybackActivity : AppCompatActivity() {
         playChannel(nextChannel, showOverlay = true)
     }
 
+    private fun retryCurrentChannel() {
+        val channel = currentChannel
+        if (channel == null || channel.videoUrl.isNullOrBlank()) {
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
+            return
+        }
+        playChannel(channel)
+    }
+
     private fun playChannel(channel: Movie, showOverlay: Boolean = false) {
-        val videoUrl = channel.videoUrl ?: return
+        val videoUrl = channel.videoUrl
+        if (videoUrl.isNullOrBlank()) {
+            showPlaybackError(getString(R.string.playback_invalid_channel), canRetry = false)
+            return
+        }
         currentChannel = channel
+        playbackUiState = PlaybackUiState.CONNECTING
+        renderPlaybackState()
         player?.apply {
+            stop()
             setMediaItem(MediaItem.fromUri(videoUrl.toUri()))
             prepare()
-            play()
+            playWhenReady = true
         }
         if (showOverlay) showChannelOverlay(channel)
+    }
+
+    private fun updatePlaybackState(playerState: Int, isPlaying: Boolean) {
+        playbackUiState = PlaybackStateMapper.fromPlayerState(playerState, isPlaying)
+        renderPlaybackState()
+    }
+
+    private fun showPlaybackError(message: String, canRetry: Boolean) {
+        playbackUiState = PlaybackUiState.ERROR
+        setPlayerControllerEnabled(false)
+        statusMessage.text = message
+        statusOverlay.visibility = View.VISIBLE
+        statusActionRow.visibility = View.VISIBLE
+        retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        backButton.visibility = View.VISIBLE
+        val focusTarget = if (canRetry) retryButton else backButton
+        focusTarget.post { focusTarget.requestFocus() }
+    }
+
+    private fun renderPlaybackState() {
+        if (playbackUiState == PlaybackUiState.ERROR) return
+        setPlayerControllerEnabled(playbackUiState != PlaybackUiState.ENDED)
+        statusOverlay.visibility = when (playbackUiState) {
+            PlaybackUiState.PLAYING,
+            PlaybackUiState.PAUSED -> View.GONE
+            else -> View.VISIBLE
+        }
+        val canRetry = playbackUiState == PlaybackUiState.ENDED
+        statusActionRow.visibility = if (canRetry) View.VISIBLE else View.GONE
+        retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        backButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        if (canRetry) retryButton.post { retryButton.requestFocus() }
+        statusMessage.text = when (playbackUiState) {
+            PlaybackUiState.CONNECTING -> getString(R.string.playback_connecting)
+            PlaybackUiState.BUFFERING -> getString(R.string.playback_buffering)
+            PlaybackUiState.ENDED -> getString(R.string.playback_ended)
+            PlaybackUiState.PLAYING,
+            PlaybackUiState.PAUSED,
+            PlaybackUiState.ERROR -> statusMessage.text
+        }
+    }
+
+    private fun setPlayerControllerEnabled(enabled: Boolean) {
+        playerView.useController = enabled
+        playerView.isFocusable = enabled
+        playerView.isFocusableInTouchMode = enabled
+        if (!enabled) {
+            playerView.clearFocus()
+        }
     }
 
     private fun showChannelOverlay(channel: Movie) {
@@ -192,6 +264,7 @@ class PlaybackActivity : AppCompatActivity() {
     }
 
     private companion object {
+        const val TAG = "PlaybackActivity"
         const val CHANNEL_OVERLAY_DURATION_MS = 2_500L
     }
 }
