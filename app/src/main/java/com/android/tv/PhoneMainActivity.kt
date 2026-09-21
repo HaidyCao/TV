@@ -7,6 +7,7 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SearchView
 import androidx.lifecycle.Lifecycle
@@ -29,6 +30,9 @@ class PhoneMainActivity : AppCompatActivity() {
     private var activeQuery = ""
     private var currentState: ChannelState = ChannelState.Idle
     private var gridLevel = 3
+    private var favoriteKeys: Set<String> = emptySet()
+    private var showingFavorites = false
+    private var favoritesMenuItem: MenuItem? = null
 
     private fun getColumnCount(): Int = gridLevel.coerceIn(1, 4)
 
@@ -36,6 +40,7 @@ class PhoneMainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_phone_main)
         gridLevel = preferredColumnCount()
+        favoriteKeys = ChannelFavorites.favoriteKeys(this)
 
         recyclerView = findViewById(R.id.channel_list)
         emptyView = findViewById(R.id.empty_view)
@@ -47,8 +52,10 @@ class PhoneMainActivity : AppCompatActivity() {
             onClick = { channel ->
                 startActivity(Intent(this, PhonePlaybackActivity::class.java).putExtra("channel", channel))
             },
+            onToggleFavorite = ::toggleFavorite,
             initialPlayerPoolSize = 1
         )
+        adapter.updateFavorites(favoriteKeys)
         recyclerView.adapter = adapter
         recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
@@ -75,6 +82,7 @@ class PhoneMainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshFavoriteKeys()
         adapter.schedulePreviewUpdate()
     }
 
@@ -107,6 +115,8 @@ class PhoneMainActivity : AppCompatActivity() {
                 }
             })
         }
+        favoritesMenuItem = menu.findItem(R.id.action_favorites)
+        updateFavoritesMenuItem()
         return true
     }
 
@@ -120,6 +130,12 @@ class PhoneMainActivity : AppCompatActivity() {
             }
             R.id.action_settings -> {
                 startActivity(Intent(this, SettingsActivity::class.java))
+                true
+            }
+            R.id.action_favorites -> {
+                showingFavorites = !showingFavorites
+                updateFavoritesMenuItem()
+                applyFilter()
                 true
             }
             else -> super.onOptionsItemSelected(item)
@@ -140,11 +156,21 @@ class PhoneMainActivity : AppCompatActivity() {
     }
 
     private fun applyFilter() {
+        val migratedFavorites = ChannelFavorites.migrateLegacyKeys(this, allChannels)
+        if (migratedFavorites != favoriteKeys) {
+            favoriteKeys = migratedFavorites
+            adapter.updateFavorites(favoriteKeys)
+        }
         val query = activeQuery.trim()
-        val visibleChannels = if (query.isBlank()) {
-            allChannels
+        val scopedChannels = if (showingFavorites) {
+            FavoriteChannelResolver.resolve(allChannels, favoriteKeys)
         } else {
-            allChannels.filter { channel ->
+            allChannels
+        }
+        val visibleChannels = if (query.isBlank()) {
+            scopedChannels
+        } else {
+            scopedChannels.filter { channel ->
                 sequenceOf(channel.title, channel.description, channel.category)
                     .filterNotNull()
                     .any { it.contains(query, ignoreCase = true) }
@@ -161,6 +187,7 @@ class PhoneMainActivity : AppCompatActivity() {
             currentState is ChannelState.Loading -> getString(R.string.channel_loading)
             currentState is ChannelState.Error -> (currentState as ChannelState.Error).message
             activeQuery.isNotBlank() -> getString(R.string.no_results)
+            showingFavorites -> getString(R.string.favorite_empty)
             else -> getString(R.string.channel_empty)
         }
         emptyView.text = message
@@ -169,5 +196,32 @@ class PhoneMainActivity : AppCompatActivity() {
 
     private fun preferredColumnCount(): Int {
         return if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 4 else 3
+    }
+
+    private fun toggleFavorite(channel: Movie) {
+        val added = ChannelFavorites.toggle(this, channel)
+        favoriteKeys = ChannelFavorites.favoriteKeys(this)
+        adapter.updateFavorites(favoriteKeys)
+        applyFilter()
+        Toast.makeText(
+            this,
+            if (added) R.string.favorite_added else R.string.favorite_removed,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun refreshFavoriteKeys() {
+        val updatedFavorites = ChannelFavorites.favoriteKeys(this)
+        if (updatedFavorites == favoriteKeys) return
+        favoriteKeys = updatedFavorites
+        adapter.updateFavorites(favoriteKeys)
+        applyFilter()
+    }
+
+    private fun updateFavoritesMenuItem() {
+        favoritesMenuItem?.apply {
+            title = getString(if (showingFavorites) R.string.menu_all_channels else R.string.menu_favorites)
+            setIcon(if (showingFavorites) R.drawable.ic_favorite else R.drawable.ic_favorite_outline)
+        }
     }
 }

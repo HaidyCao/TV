@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
 import androidx.leanback.app.BackgroundManager
@@ -44,15 +45,28 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var metrics: DisplayMetrics
     private var backgroundUri: String? = null
     private var previewFrameManager: PreviewFrameManager? = null
+    private var favoriteKeys: Set<String> = emptySet()
+    private var latestGroups: Map<String, List<Movie>> = emptyMap()
+    private var latestStatusMessage: String? = null
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
         prepareBackgroundManager()
         setupUiElements()
         setupEventListeners()
         observeChannelState()
         ChannelRepository.ensureLoaded(requireContext())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val updatedFavorites = ChannelFavorites.favoriteKeys(requireContext())
+        if (updatedFavorites != favoriteKeys) {
+            favoriteKeys = updatedFavorites
+            renderRows(latestGroups, latestStatusMessage)
+        }
     }
 
     override fun onDestroyView() {
@@ -105,8 +119,31 @@ class MainFragment : BrowseSupportFragment() {
         tvGroups: Map<String, List<Movie>>,
         statusMessage: String?
     ) {
+        latestGroups = tvGroups
+        latestStatusMessage = statusMessage
+        val channels = tvGroups.values.flatten()
+        val migratedFavorites = ChannelFavorites.migrateLegacyKeys(requireContext(), channels)
+        if (migratedFavorites != favoriteKeys) {
+            favoriteKeys = migratedFavorites
+        }
         val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
-        val cardPresenter = CardPresenter(previewFrameManager)
+        val cardPresenter = CardPresenter(
+            previewFrameManager = previewFrameManager,
+            isFavorite = { channel -> ChannelFavorites.isFavorite(channel, favoriteKeys) },
+            onFavoriteToggle = ::toggleFavorite
+        )
+
+        val favorites = FavoriteChannelResolver.resolve(tvGroups.values.flatten(), favoriteKeys)
+        if (favorites.isNotEmpty()) {
+            val favoritesAdapter = ArrayObjectAdapter(cardPresenter)
+            favorites.forEach(favoritesAdapter::add)
+            rowsAdapter.add(
+                ListRow(
+                    HeaderItem(rowsAdapter.size().toLong(), getString(R.string.favorite_channels)),
+                    favoritesAdapter
+                )
+            )
+        }
 
         tvGroups.forEach { (category, channels) ->
             val listRowAdapter = ArrayObjectAdapter(cardPresenter)
@@ -129,6 +166,17 @@ class MainFragment : BrowseSupportFragment() {
             )
         )
         adapter = rowsAdapter
+    }
+
+    private fun toggleFavorite(channel: Movie) {
+        val added = ChannelFavorites.toggle(requireContext(), channel)
+        favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
+        renderRows(latestGroups, latestStatusMessage)
+        Toast.makeText(
+            requireContext(),
+            if (added) R.string.favorite_added else R.string.favorite_removed,
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun setupEventListeners() {

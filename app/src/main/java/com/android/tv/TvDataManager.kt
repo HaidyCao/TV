@@ -13,6 +13,7 @@ import okhttp3.ResponseBody
 import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -36,6 +37,7 @@ object TvDataManager {
     private const val DEFAULT_GROUP = "其他频道"
 
     private val logoPattern = Regex("""tvg-logo="([^"]+)""", RegexOption.IGNORE_CASE)
+    private val tvgIdPattern = Regex("""tvg-id="([^"]*)""", RegexOption.IGNORE_CASE)
     private val groupPattern = Regex("""group-title="([^"]+)""", RegexOption.IGNORE_CASE)
 
     @Volatile
@@ -158,6 +160,7 @@ object TvDataManager {
 
     private fun parseTxt(content: String, channels: MutableList<Movie>) {
         var currentGroup: String? = null
+        val identityOccurrences = mutableMapOf<String, Int>()
         content.lines().forEach { line ->
             val trimmedLine = line.trim()
             if (trimmedLine.isNotBlank() && trimmedLine.contains(",")) {
@@ -170,9 +173,15 @@ object TvDataManager {
                         return@forEach
                     }
                     if (name.isBlank() || url.isBlank()) return@forEach
+                    val category = currentGroup?.trim()
+                        .takeUnless { it.isNullOrBlank() || it == DEFAULT_GROUP }
+                        ?: inferCategory(name)
+                    val identity = channelIdentity(category, name)
+                    val occurrence = identityOccurrences[identity] ?: 0
+                    identityOccurrences[identity] = occurrence + 1
                     channels.add(
                         Movie(
-                            id = stableId(url),
+                            id = stableChannelId(identity, occurrence),
                             title = name,
                             videoUrl = url,
                             studio = Movie.LIVE_STUDIO,
@@ -190,7 +199,9 @@ object TvDataManager {
     private fun parseM3U(content: String, channels: MutableList<Movie>) {
         var currentName = ""
         var currentLogo: String? = null
+        var currentTvgId: String? = null
         var currentGroup = DEFAULT_GROUP
+        val identityOccurrences = mutableMapOf<String, Int>()
 
         content.lines().forEach { line ->
             val trimmedLine = line.trim()
@@ -204,6 +215,9 @@ object TvDataManager {
                 val logoMatch = logoPattern.find(trimmedLine)
                 currentLogo = logoMatch?.groupValues?.get(1)
 
+                val tvgIdMatch = tvgIdPattern.find(trimmedLine)
+                currentTvgId = tvgIdMatch?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+
                 // 解析分组 (可选)
                 val groupMatch = groupPattern.find(trimmedLine)
                 currentGroup = groupMatch?.groupValues?.get(1)?.trim().orEmpty().ifBlank { DEFAULT_GROUP }
@@ -211,9 +225,18 @@ object TvDataManager {
             } else if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
                 // 这一行是 URL
                 if (currentName.isNotEmpty()) {
+                    val category = currentGroup.trim()
+                        .takeUnless { it.isBlank() || it == DEFAULT_GROUP }
+                        ?: inferCategory(currentName)
+                    val identity = currentTvgId?.let {
+                        "tvg:${encodeIdentityPart(normalizeIdentityPart(it))}"
+                    }
+                        ?: channelIdentity(category, currentName)
+                    val occurrence = identityOccurrences[identity] ?: 0
+                    identityOccurrences[identity] = occurrence + 1
                     channels.add(
                         Movie(
-                            id = stableId(trimmedLine),
+                            id = stableChannelId(identity, occurrence),
                             title = currentName,
                             videoUrl = trimmedLine,
                             studio = Movie.LIVE_STUDIO,
@@ -226,6 +249,7 @@ object TvDataManager {
                     // 重置，因为我们已经处理完一个频道
                     currentName = ""
                     currentLogo = null
+                    currentTvgId = null
                 }
             }
         }
@@ -254,6 +278,23 @@ object TvDataManager {
             title.contains("CGTN", ignoreCase = true) -> "国际频道"
             else -> DEFAULT_GROUP
         }
+    }
+
+    private fun channelIdentity(category: String, title: String): String {
+        return "name:${encodeIdentityPart(normalizeIdentityPart(category))}" +
+            encodeIdentityPart(normalizeIdentityPart(title))
+    }
+
+    private fun encodeIdentityPart(value: String): String {
+        return "${value.length}:$value"
+    }
+
+    private fun normalizeIdentityPart(value: String): String {
+        return value.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT)
+    }
+
+    private fun stableChannelId(identity: String, occurrence: Int): Long {
+        return stableId("channel-v2:$identity:$occurrence")
     }
 
     private fun stableId(value: String): Long {

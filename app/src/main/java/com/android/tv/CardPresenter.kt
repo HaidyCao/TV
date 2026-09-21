@@ -6,6 +6,7 @@ import androidx.leanback.widget.ImageCardView
 import androidx.leanback.widget.Presenter
 import androidx.core.content.ContextCompat
 import android.util.Log
+import android.view.KeyEvent
 import android.view.ViewGroup
 import com.bumptech.glide.Glide
 import kotlin.properties.Delegates
@@ -14,7 +15,11 @@ import kotlin.properties.Delegates
  * A CardPresenter is used to generate Views and bind Objects to them on demand.
  * It contains an ImageCardView.
  */
-class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null) : Presenter() {
+class CardPresenter(
+    private val previewFrameManager: PreviewFrameManager? = null,
+    private val isFavorite: (Movie) -> Boolean = { false },
+    private val onFavoriteToggle: ((Movie) -> Unit)? = null
+) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
     private var mLiveCardImage: Drawable? = null
     private var sSelectedBackgroundColor: Int by Delegates.notNull()
@@ -51,6 +56,19 @@ class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null
         cardView.titleText = movie.title
         cardView.contentText = movie.studio
         cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
+        cardView.badgeImage = if (isFavorite(movie)) {
+            ContextCompat.getDrawable(cardView.context, R.drawable.ic_favorite)
+        } else {
+            null
+        }
+        cardView.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_MENU && event.action == KeyEvent.ACTION_UP) {
+                onFavoriteToggle?.invoke(movie)
+                onFavoriteToggle != null
+            } else {
+                false
+            }
+        }
         
         val imageView = cardView.mainImageView ?: return
         val requestKey = "${movie.id}:${movie.videoUrl.orEmpty()}"
@@ -99,6 +117,7 @@ class CardPresenter(private val previewFrameManager: PreviewFrameManager? = null
         }
         cardView.badgeImage = null
         cardView.mainImage = null
+        cardView.setOnKeyListener(null)
     }
 
     private fun updateCardBackgroundColor(view: ImageCardView, selected: Boolean) {

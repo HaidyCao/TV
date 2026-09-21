@@ -69,6 +69,18 @@
                 android:textStyle="bold"
                 android:visibility="gone" />
 
+            <ImageView
+                android:id="@+id/favorite_badge"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_gravity="top|end"
+                android:layout_margin="6dp"
+                android:background="@drawable/favorite_badge_background"
+                android:contentDescription="@string/favorite_badge_description"
+                android:padding="5dp"
+                android:src="@drawable/ic_favorite"
+                android:visibility="gone" />
+
         </FrameLayout>
 
         <TextView

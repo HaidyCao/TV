@@ -7,6 +7,11 @@
         app:showAsAction="ifRoom|collapseActionView"
         app:actionViewClass="androidx.appcompat.widget.SearchView" />
     <item
+        android:id="@+id/action_favorites"
+        android:title="@string/menu_favorites"
+        android:icon="@drawable/ic_favorite_outline"
+        app:showAsAction="always" />
+    <item
         android:id="@+id/action_grid"
         android:title="@string/menu_layout"
         android:icon="@android:drawable/ic_menu_sort_by_size"

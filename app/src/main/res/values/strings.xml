@@ -38,6 +38,11 @@
     <string name="playback_error">播放失败，请检查网络或切换频道后重试</string>
     <string name="channel_switch_label">正在切换至</string>
     <string name="channel_switch_unavailable">没有可切换的频道</string>
+    <string name="favorite_added">已收藏频道</string>
+    <string name="favorite_removed">已取消收藏</string>
+    <string name="favorite_empty">还没有收藏频道，长按频道卡片即可收藏</string>
+    <string name="favorite_channels">收藏频道</string>
+    <string name="favorite_badge_description">已收藏</string>
 
     <!-- Phone browse -->
     <string name="phone_browse_title">电视直播</string>
@@ -45,5 +50,7 @@
     <string name="channel_placeholder_label">TV</string>
     <string name="menu_search">搜索</string>
     <string name="menu_layout">布局</string>
+    <string name="menu_favorites">收藏</string>
+    <string name="menu_all_channels">全部频道</string>
     <string name="menu_settings">设置</string>
 </resources>

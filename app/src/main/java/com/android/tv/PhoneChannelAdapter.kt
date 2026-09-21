@@ -28,6 +28,7 @@ import kotlin.math.min
  */
 class PhoneChannelAdapter(
     private val onClick: (Movie) -> Unit,
+    private val onToggleFavorite: (Movie) -> Unit,
     @Suppress("UNUSED_PARAMETER") initialPlayerPoolSize: Int = 1
 ) : ListAdapter<Movie, PhoneChannelAdapter.ViewHolder>(DiffCallback()) {
 
@@ -35,6 +36,7 @@ class PhoneChannelAdapter(
     private var previewPlayer: ExoPlayer? = null
     private var previewHolder: ViewHolder? = null
     private var previewTask: Runnable? = null
+    private var favoriteKeys: Set<String> = emptySet()
 
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
@@ -54,6 +56,16 @@ class PhoneChannelAdapter(
     }
 
     fun refreshPlayers() = schedulePreviewUpdate()
+
+    fun updateFavorites(newFavoriteKeys: Set<String>) {
+        if (favoriteKeys == newFavoriteKeys) return
+        favoriteKeys = newFavoriteKeys
+        val recycler = recyclerView ?: return
+        repeat(recycler.childCount) { index ->
+            (recycler.getChildViewHolder(recycler.getChildAt(index)) as? ViewHolder)
+                ?.updateFavoriteBadge()
+        }
+    }
 
     fun schedulePreviewUpdate() {
         cancelScheduledPreview()
@@ -184,6 +196,7 @@ class PhoneChannelAdapter(
         private val videoContainer: ViewGroup = itemView.findViewById(R.id.video_container)
         private val liveBadge: TextView = itemView.findViewById(R.id.live_badge)
         private val categoryBadge: TextView = itemView.findViewById(R.id.category_badge)
+        private val favoriteBadge: ImageView = itemView.findViewById(R.id.favorite_badge)
 
         var movie: Movie? = null
             private set
@@ -197,6 +210,7 @@ class PhoneChannelAdapter(
             liveBadge.visibility = if (newMovie.isLive) View.VISIBLE else View.GONE
             categoryBadge.text = newMovie.category
             categoryBadge.visibility = if (newMovie.category.isNullOrBlank()) View.GONE else View.VISIBLE
+            updateFavoriteBadge()
 
             Glide.with(itemView).clear(image)
             image.setImageDrawable(null)
@@ -212,7 +226,19 @@ class PhoneChannelAdapter(
                 if (this === previewHolder) clearPreview()
                 onClick(newMovie)
             }
+            itemView.setOnLongClickListener {
+                onToggleFavorite(newMovie)
+                true
+            }
             hidePreviewFrame()
+        }
+
+        fun updateFavoriteBadge() {
+            favoriteBadge.visibility = if (movie?.let { ChannelFavorites.isFavorite(it, favoriteKeys) } == true) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
         }
 
         fun ensurePreviewTexture(): TextureView {
@@ -265,6 +291,7 @@ class PhoneChannelAdapter(
         fun unbind() {
             Glide.with(itemView).clear(image)
             itemView.setOnClickListener(null)
+            itemView.setOnLongClickListener(null)
             movie = null
             removePreviewTexture()
         }
