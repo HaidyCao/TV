@@ -1,0 +1,188 @@
+package com.android.tv
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+
+/**
+ * Owns the one live preview used by the TV browse screen.
+ *
+ * Selection is delayed so moving across a row does not open every stream. A
+ * generation token makes a delayed callback harmless after focus moves or the
+ * view is replaced.
+ */
+@SuppressLint("UnsafeOptInUsageError")
+internal class TvChannelPreviewController(
+    context: Context,
+    private val handler: Handler = Handler(Looper.getMainLooper())
+) {
+    private val appContext = context.applicationContext
+    private val generation = TvChannelPreviewGeneration()
+
+    private var pendingTask: Runnable? = null
+    private var pendingHolder: CardPresenter.CardViewHolder? = null
+    private var player: ExoPlayer? = null
+    private var activeListener: Player.Listener? = null
+    private var activeHolder: CardPresenter.CardViewHolder? = null
+    private var activeTextureView: android.view.TextureView? = null
+    private var activeToken: Long = 0L
+
+    /** Schedules a muted preview for the currently focused live card. */
+    fun schedule(movie: Movie, holder: CardPresenter.CardViewHolder) {
+        stop()
+        if (!TvChannelPreviewPolicy.canPreview(movie)) return
+
+        val token = generation.current()
+        pendingHolder = holder
+        Log.d(TAG, "schedule ${logLabel(movie)}")
+        pendingTask = Runnable {
+            pendingTask = null
+            pendingHolder = null
+            if (!generation.isCurrent(token) || !isValidSelection(movie, holder)) {
+                if (generation.isCurrent(token)) stop()
+                return@Runnable
+            }
+            startPreview(token, movie, holder)
+        }
+        handler.postDelayed(pendingTask!!, TvChannelPreviewPolicy.FOCUS_DELAY_MS)
+    }
+
+    /** Stops any pending or active preview immediately. */
+    fun stop() {
+        generation.next()
+        pendingTask?.let(handler::removeCallbacks)
+        pendingTask = null
+        pendingHolder = null
+
+        val oldPlayer = player
+        val oldListener = activeListener
+        val oldHolder = activeHolder
+        val oldTexture = activeTextureView
+        if (oldPlayer != null && oldListener != null) {
+            oldPlayer.removeListener(oldListener)
+        }
+        activeListener = null
+        if (oldPlayer != null && oldTexture != null) {
+            runCatching { oldPlayer.clearVideoTextureView(oldTexture) }
+        }
+        oldHolder?.resetPreviewLayer()
+        activeHolder = null
+        activeTextureView = null
+        activeToken = 0L
+
+        oldPlayer?.let {
+            runCatching {
+                it.stop()
+                it.clearMediaItems()
+            }
+        }
+        if (oldHolder != null || oldTexture != null) {
+            Log.d(TAG, "stop")
+        }
+    }
+
+    /** Stops and releases the player when the browse view is destroyed. */
+    fun release() {
+        stop()
+        player?.release()
+        player = null
+    }
+
+    /** Called by CardPresenter before a holder is rebound or recycled. */
+    fun stopIfAttached(holder: CardPresenter.CardViewHolder) {
+        if (holder === activeHolder || holder === pendingHolder) stop()
+    }
+
+    private fun isValidSelection(
+        movie: Movie,
+        holder: CardPresenter.CardViewHolder
+    ): Boolean {
+        return TvChannelPreviewPolicy.canPreview(movie) &&
+            holder.cardView.isAttachedToWindow &&
+            holder.cardView.hasFocus()
+    }
+
+    private fun startPreview(
+        token: Long,
+        movie: Movie,
+        holder: CardPresenter.CardViewHolder
+    ) {
+        if (!generation.isCurrent(token) || !isValidSelection(movie, holder)) return
+        val videoUrl = movie.videoUrl ?: return
+        val textureView = holder.ensurePreviewTexture()
+        val previewPlayer = player ?: PlaybackPlayerFactory.create(appContext).also { createdPlayer ->
+            createdPlayer.volume = 0f
+            createdPlayer.repeatMode = Player.REPEAT_MODE_OFF
+            player = createdPlayer
+        }
+        previewPlayer.volume = 0f
+
+        activeHolder = holder
+        activeTextureView = textureView
+        activeToken = token
+        activeListener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                if (player === previewPlayer && activeToken == token && activeHolder === holder &&
+                    generation.isCurrent(token)
+                ) {
+                    Log.d(TAG, "first-frame ${logLabel(movie)}")
+                    holder.showPreviewFrame()
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (player === previewPlayer && activeToken == token && activeHolder === holder &&
+                    generation.isCurrent(token)
+                ) {
+                    Log.w(TAG, "error ${error.errorCodeName}")
+                    stop()
+                }
+            }
+        }.also(previewPlayer::addListener)
+        Log.d(TAG, "start ${logLabel(movie)}")
+        runCatching {
+            previewPlayer.setVideoTextureView(textureView)
+            previewPlayer.setMediaItem(MediaItem.fromUri(videoUrl))
+            previewPlayer.prepare()
+            previewPlayer.playWhenReady = true
+        }.onFailure {
+            Log.w(TAG, "error setup")
+            stop()
+        }
+    }
+
+    private fun logLabel(movie: Movie): String {
+        return movie.title.orEmpty().take(40).ifBlank { "channel" }
+    }
+
+    companion object {
+        private const val TAG = "TvChannelPreview"
+    }
+}
+
+internal object TvChannelPreviewPolicy {
+    const val FOCUS_DELAY_MS = 800L
+
+    fun canPreview(movie: Movie): Boolean {
+        return movie.isLive && !movie.videoUrl.isNullOrBlank()
+    }
+}
+
+internal class TvChannelPreviewGeneration {
+    private var value = 0L
+
+    fun next(): Long {
+        value += 1L
+        return value
+    }
+
+    fun current(): Long = value
+
+    fun isCurrent(token: Long): Boolean = token == value
+}

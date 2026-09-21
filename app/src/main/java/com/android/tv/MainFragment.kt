@@ -45,6 +45,7 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var metrics: DisplayMetrics
     private var backgroundUri: String? = null
     private var previewFrameManager: PreviewFrameManager? = null
+    private var tvChannelPreviewController: TvChannelPreviewController? = null
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
     private var latestStatusMessage: String? = null
@@ -53,6 +54,7 @@ class MainFragment : BrowseSupportFragment() {
         super.onViewCreated(view, savedInstanceState)
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
+        tvChannelPreviewController = TvChannelPreviewController(requireContext())
         prepareBackgroundManager()
         setupUiElements()
         setupEventListeners()
@@ -69,9 +71,16 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
+    override fun onPause() {
+        tvChannelPreviewController?.stop()
+        super.onPause()
+    }
+
     override fun onDestroyView() {
         backgroundUpdate?.let(backgroundHandler::removeCallbacks)
         backgroundUpdate = null
+        tvChannelPreviewController?.release()
+        tvChannelPreviewController = null
         previewFrameManager?.release()
         previewFrameManager = null
         super.onDestroyView()
@@ -119,6 +128,7 @@ class MainFragment : BrowseSupportFragment() {
         tvGroups: Map<String, List<Movie>>,
         statusMessage: String?
     ) {
+        tvChannelPreviewController?.stop()
         latestGroups = tvGroups
         latestStatusMessage = statusMessage
         val channels = tvGroups.values.flatten()
@@ -130,7 +140,15 @@ class MainFragment : BrowseSupportFragment() {
         val cardPresenter = CardPresenter(
             previewFrameManager = previewFrameManager,
             isFavorite = { channel -> ChannelFavorites.isFavorite(channel, favoriteKeys) },
-            onFavoriteToggle = ::toggleFavorite
+            onFavoriteToggle = ::toggleFavorite,
+            onCardUnbound = { holder -> tvChannelPreviewController?.stopIfAttached(holder) },
+            onCardFocusChanged = { movie, holder, hasFocus ->
+                if (hasFocus) {
+                    tvChannelPreviewController?.schedule(movie, holder)
+                } else {
+                    tvChannelPreviewController?.stopIfAttached(holder)
+                }
+            }
         )
 
         val favorites = FavoriteChannelResolver.resolve(tvGroups.values.flatten(), favoriteKeys)
@@ -181,6 +199,7 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun setupEventListeners() {
         setOnSearchClickedListener {
+            tvChannelPreviewController?.stop()
             requireActivity().supportFragmentManager.beginTransaction()
                 .replace(R.id.main_browse_fragment, SearchFragment())
                 .addToBackStack(null)
@@ -197,6 +216,7 @@ class MainFragment : BrowseSupportFragment() {
             rowViewHolder: RowPresenter.ViewHolder,
             row: Row
         ) {
+            tvChannelPreviewController?.stop()
             when (item) {
                 is Movie -> openMovie(item, itemViewHolder)
                 is String -> if (item == getString(R.string.personal_settings)) {
@@ -207,6 +227,7 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     private fun openMovie(movie: Movie, itemViewHolder: Presenter.ViewHolder) {
+        tvChannelPreviewController?.stop()
         val intent = Intent(
             requireActivity(),
             if (movie.isLive) PlaybackActivity::class.java else DetailsActivity::class.java
@@ -237,6 +258,8 @@ class MainFragment : BrowseSupportFragment() {
             if (item is Movie) {
                 backgroundUri = item.backgroundImageUrl
                 scheduleBackgroundUpdate()
+            } else {
+                tvChannelPreviewController?.stop()
             }
         }
     }
