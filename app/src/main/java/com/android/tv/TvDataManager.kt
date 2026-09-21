@@ -4,11 +4,15 @@ import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.CacheControl
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.ResponseBody
 import java.io.File
 import java.io.IOException
@@ -42,6 +46,7 @@ object TvDataManager {
 
     @Volatile
     private var httpClient: OkHttpClient? = null
+    private val fetchGate = RefreshRequestGate()
 
     fun getSourceUrl(context: Context): String {
         return context.applicationContext
@@ -53,6 +58,7 @@ object TvDataManager {
     }
 
     fun saveSourceUrl(context: Context, sourceUrl: String) {
+        fetchGate.begin()
         context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
@@ -69,6 +75,7 @@ object TvDataManager {
         context: Context,
         forceNetwork: Boolean = false
     ): TvChannelFetchResult {
+        val requestId = fetchGate.begin()
         return withContext(Dispatchers.IO) {
             val appContext = context.applicationContext
             val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -76,33 +83,49 @@ object TvDataManager {
             require(isValidSourceUrl(sourceUrl)) { "节目源地址必须是有效的 HTTP 或 HTTPS URL" }
 
             try {
+                ensureCurrentFetch(requestId)
                 val requestBuilder = Request.Builder()
                     .url(sourceUrl)
                     .header("Accept", "application/x-mpegurl, audio/x-mpegurl, text/plain, */*")
                 if (forceNetwork) requestBuilder.cacheControl(CacheControl.FORCE_NETWORK)
                 val request = requestBuilder.build()
-                val content = client(appContext).newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                    readPlaylist(response.body)
-                }
+                val content = executePlaylistRequest(client(appContext), request)
 
+                ensureCurrentFetch(requestId)
                 val groups = parsePlaylist(content)
+                if (!PlaylistSnapshotPolicy.containsPlayableChannel(groups)) {
+                    throw IOException("节目单为空或没有可播放频道")
+                }
+                ensureCurrentFetch(requestId)
                 val now = System.currentTimeMillis()
-                prefs.edit()
-                    .putString(KEY_CACHED_SOURCE_URL, sourceUrl)
-                    .putString(KEY_CACHED_PLAYLIST, content)
-                    .putLong(KEY_CACHED_AT, now)
-                    .apply()
+                val snapshotWritten = fetchGate.runIfCurrent(requestId) {
+                    prefs.edit()
+                        .putString(KEY_CACHED_SOURCE_URL, sourceUrl)
+                        .putString(KEY_CACHED_PLAYLIST, content)
+                        .putLong(KEY_CACHED_AT, now)
+                        .apply()
+                }
+                if (!snapshotWritten) throw CancellationException("旧节目单请求已淘汰")
 
                 TvChannelFetchResult(groups, sourceUrl, fromSnapshot = false, updatedAtMillis = now)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
+                ensureCurrentFetch(requestId)
                 val snapshot = prefs.getString(KEY_CACHED_PLAYLIST, null)
                 val cachedSource = prefs.getString(KEY_CACHED_SOURCE_URL, null)
-                if (!snapshot.isNullOrBlank() && cachedSource == sourceUrl) {
+                val snapshotGroups = snapshot
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { cachedPlaylist -> runCatching { parsePlaylist(cachedPlaylist) }.getOrNull() }
+                if (snapshotGroups != null && PlaylistSnapshotPolicy.shouldUseSnapshot(
+                        currentSourceUrl = sourceUrl,
+                        snapshotSourceUrl = cachedSource,
+                        snapshotGroups = snapshotGroups
+                    )
+                ) {
+                    ensureCurrentFetch(requestId)
                     TvChannelFetchResult(
-                        groups = parsePlaylist(snapshot),
+                        groups = snapshotGroups,
                         sourceUrl = sourceUrl,
                         fromSnapshot = true,
                         updatedAtMillis = prefs.getLong(KEY_CACHED_AT, 0L)
@@ -112,6 +135,37 @@ object TvDataManager {
                 }
             }
         }
+    }
+
+    private fun ensureCurrentFetch(requestId: Long) {
+        if (!fetchGate.isCurrent(requestId)) {
+            throw CancellationException("旧节目单请求已淘汰")
+        }
+    }
+
+    private suspend fun executePlaylistRequest(
+        client: OkHttpClient,
+        request: Request
+    ): String = suspendCancellableCoroutine { continuation ->
+        val call = client.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                continuation.resumeWith(Result.failure(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val result = runCatching {
+                    response.use { currentResponse ->
+                        if (!currentResponse.isSuccessful) {
+                            throw IOException("Unexpected code $currentResponse")
+                        }
+                        readPlaylist(currentResponse.body)
+                    }
+                }
+                continuation.resumeWith(result)
+            }
+        })
     }
 
     private fun client(context: Context): OkHttpClient {

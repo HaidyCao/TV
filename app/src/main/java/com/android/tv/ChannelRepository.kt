@@ -49,10 +49,12 @@ sealed interface ChannelState {
 object ChannelRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutableState = MutableStateFlow<ChannelState>(ChannelState.Idle)
+    private val refreshGate = RefreshRequestGate()
 
     val state: StateFlow<ChannelState> = mutableState.asStateFlow()
 
     private var refreshJob: Job? = null
+    @Volatile
     private var loadedSourceUrl: String? = null
 
     fun ensureLoaded(context: Context) {
@@ -67,6 +69,8 @@ object ChannelRepository {
             refreshJob?.cancel()
         }
 
+        val requestId = refreshGate.begin()
+
         val appContext = context.applicationContext
         val previousGroups = mutableState.value.groups
         mutableState.value = ChannelState.Loading(previousGroups)
@@ -74,8 +78,7 @@ object ChannelRepository {
         refreshJob = scope.launch {
             try {
                 val result = TvDataManager.fetchTvChannels(appContext, forceNetwork = force)
-                loadedSourceUrl = result.sourceUrl
-                mutableState.value = if (result.groups.isEmpty()) {
+                val nextState = if (result.groups.isEmpty()) {
                     ChannelState.Empty(result.sourceUrl, result.fromSnapshot)
                 } else {
                     ChannelState.Content(
@@ -85,19 +88,27 @@ object ChannelRepository {
                         updatedAtMillis = result.updatedAtMillis
                     )
                 }
+                refreshGate.runIfCurrent(requestId) {
+                    loadedSourceUrl = result.sourceUrl
+                    mutableState.value = nextState
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                mutableState.value = ChannelState.Error(
-                    message = error.message ?: "无法加载频道，请检查节目源和网络连接。",
-                    groups = previousGroups
-                )
+                refreshGate.runIfCurrent(requestId) {
+                    mutableState.value = ChannelState.Error(
+                        message = error.message ?: "无法加载频道，请检查节目源和网络连接。",
+                        groups = previousGroups
+                    )
+                }
             }
         }
     }
 
     fun invalidate() {
         loadedSourceUrl = null
+        refreshJob?.cancel()
+        refreshGate.begin()
     }
 
     /**
