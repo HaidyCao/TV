@@ -3,6 +3,7 @@ package com.android.tv
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.view.Gravity
+import androidx.leanback.widget.BaseCardView
 import androidx.leanback.widget.ImageCardView
 import androidx.leanback.widget.Presenter
 import androidx.core.content.ContextCompat
@@ -10,7 +11,6 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.TextureView
 import android.view.View
-import android.widget.FrameLayout
 import android.view.ViewGroup
 import com.bumptech.glide.Glide
 import kotlin.properties.Delegates
@@ -208,8 +208,10 @@ class CardPresenter(
             }
 
             return TextureView(context).also { textureView ->
-                textureView.layoutParams = FrameLayout.LayoutParams(CARD_WIDTH, CARD_HEIGHT).apply {
+                // Mark the preview overlay as EXTRA so Leanback does not include it in card height.
+                textureView.layoutParams = BaseCardView.LayoutParams(CARD_WIDTH, CARD_HEIGHT).apply {
                     gravity = Gravity.TOP or Gravity.START
+                    viewType = BaseCardView.LayoutParams.VIEW_TYPE_EXTRA
                 }
                 textureView.isFocusable = false
                 textureView.isFocusableInTouchMode = false
