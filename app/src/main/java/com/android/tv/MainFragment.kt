@@ -43,6 +43,7 @@ class MainFragment : BrowseSupportFragment() {
     private lateinit var backgroundManager: BackgroundManager
     private var defaultBackground: Drawable? = null
     private lateinit var metrics: DisplayMetrics
+    private lateinit var cardMetrics: TvCardMetrics
     private var backgroundUri: String? = null
     private var previewFrameManager: PreviewFrameManager? = null
     private var livePreviewFrameStore: LivePreviewFrameStore? = null
@@ -121,6 +122,7 @@ class MainFragment : BrowseSupportFragment() {
         backgroundManager.attach(requireActivity().window)
         defaultBackground = ContextCompat.getDrawable(requireContext(), R.drawable.default_background)
         metrics = resources.displayMetrics
+        cardMetrics = TvCardMetrics.forScreenWidth(metrics.widthPixels)
         backgroundManager.drawable = defaultBackground
     }
 
@@ -169,7 +171,7 @@ class MainFragment : BrowseSupportFragment() {
         if (migratedFavorites != favoriteKeys) {
             favoriteKeys = migratedFavorites
         }
-        val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
+        val rowsAdapter = ArrayObjectAdapter(TvListRowPresenter(cardMetrics))
         val cardPresenter = CardPresenter(
             previewFrameManager = previewFrameManager,
             livePreviewFrameStore = livePreviewFrameStore,
@@ -208,7 +210,8 @@ class MainFragment : BrowseSupportFragment() {
                 } else {
                     visibleLivePreviewController?.cancel(holder)
                 }
-            }
+            },
+            cardMetrics = cardMetrics
         )
 
         val favorites = FavoriteChannelResolver.resolve(tvGroups.values.flatten(), favoriteKeys)
@@ -388,6 +391,17 @@ class MainFragment : BrowseSupportFragment() {
         }
 
         override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) = Unit
+    }
+
+    private class TvListRowPresenter(
+        private val cardMetrics: TvCardMetrics
+    ) : ListRowPresenter() {
+        override fun initializeRowViewHolder(holder: RowPresenter.ViewHolder) {
+            super.initializeRowViewHolder(holder)
+            (holder as? ListRowPresenter.ViewHolder)
+                ?.gridView
+                ?.setHorizontalSpacing(cardMetrics.itemSpacingPx)
+        }
     }
 
     private inner class StatusPresenter : Presenter() {

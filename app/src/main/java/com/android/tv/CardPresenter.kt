@@ -26,7 +26,8 @@ class CardPresenter(
     private val onFavoriteToggle: ((Movie) -> Unit)? = null,
     private val onCardUnbound: ((CardViewHolder) -> Unit)? = null,
     private val onCardFocusChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null,
-    private val onCardVisibilityChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null
+    private val onCardVisibilityChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null,
+    private val cardMetrics: TvCardMetrics = TvCardMetrics.legacy()
 ) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
     private var mLiveCardImage: Drawable? = null
@@ -37,7 +38,7 @@ class CardPresenter(
         mDefaultCardImage = ContextCompat.getDrawable(parent.context, R.drawable.movie)
         mLiveCardImage = ContextCompat.getDrawable(parent.context, R.drawable.channel_placeholder)
 
-        val cardView = object : PreviewCardView(parent.context) {
+        val cardView = object : PreviewCardView(parent.context, cardMetrics) {
             override fun setSelected(selected: Boolean) {
                 updateCardBackgroundColor(this, selected)
                 super.setSelected(selected)
@@ -71,7 +72,7 @@ class CardPresenter(
             cardView.context.getString(R.string.channel_placeholder_label)
         }
         cardView.setCardContentText(movie.studio.takeUnless { movie.isLive })
-        cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
+        cardView.setMainImageDimensions(cardMetrics.imageWidthPx, cardMetrics.imageHeightPx)
         cardView.badgeImage = if (isFavorite(movie)) {
             ContextCompat.getDrawable(cardView.context, R.drawable.ic_favorite)
         } else {
@@ -234,7 +235,8 @@ class CardPresenter(
      * first frame, while the TextureView itself remains renderable.
      */
     internal open class PreviewCardView(
-        context: android.content.Context
+        context: android.content.Context,
+        private val cardMetrics: TvCardMetrics
     ) : ImageCardView(context) {
         var previewTextureView: TextureView? = null
             private set
@@ -350,14 +352,14 @@ class CardPresenter(
             // Measure the display in a second phase so BaseCardView excludes it from content stacking.
             previewTextureView?.let { textureView ->
                 textureView.measure(
-                    MeasureSpec.makeMeasureSpec(CARD_WIDTH, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(CARD_HEIGHT, MeasureSpec.EXACTLY)
+                    MeasureSpec.makeMeasureSpec(cardMetrics.imageWidthPx, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(cardMetrics.imageHeightPx, MeasureSpec.EXACTLY)
                 )
                 textureView.layout(
                     paddingLeft,
                     paddingTop,
-                    paddingLeft + CARD_WIDTH,
-                    paddingTop + CARD_HEIGHT
+                    paddingLeft + cardMetrics.imageWidthPx,
+                    paddingTop + cardMetrics.imageHeightPx
                 )
             }
             if (!previewFrameShown) {
@@ -385,7 +387,7 @@ class CardPresenter(
             }
 
             return TextureView(context).also { textureView ->
-                textureView.layoutParams = BaseCardView.LayoutParams(CARD_WIDTH, 0)
+                textureView.layoutParams = BaseCardView.LayoutParams(cardMetrics.imageWidthPx, 0)
                 textureView.isFocusable = false
                 textureView.isFocusableInTouchMode = false
                 textureView.isClickable = false
@@ -454,8 +456,6 @@ class CardPresenter(
     companion object {
         private val TAG = "CardPresenter"
 
-        private val CARD_WIDTH = 313
-        private val CARD_HEIGHT = 176
         private const val FOCUS_SCALE = 1.05f
         private const val FOCUS_ANIMATION_DURATION_MS = 140L
         private const val CARD_ELEVATION_DP = 2f
