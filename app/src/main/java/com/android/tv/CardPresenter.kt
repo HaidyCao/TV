@@ -82,6 +82,25 @@ class CardPresenter(
             if (keyCode == KeyEvent.KEYCODE_MENU && event.action == KeyEvent.ACTION_UP) {
                 onFavoriteToggle?.invoke(movie)
                 onFavoriteToggle != null
+            } else if (onFavoriteToggle != null &&
+                (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
+            ) {
+                when (
+                    holder.onFavoriteKey(
+                        keyCode = keyCode,
+                        action = event.action,
+                        repeatCount = event.repeatCount,
+                        isLongPress = event.isLongPress()
+                    )
+                ) {
+                    FavoriteLongPressResult.TOGGLE -> {
+                        onFavoriteToggle.invoke(movie)
+                        true
+                    }
+
+                    FavoriteLongPressResult.CONSUME -> true
+                    FavoriteLongPressResult.PASS_THROUGH -> false
+                }
             } else {
                 false
             }
@@ -183,6 +202,7 @@ class CardPresenter(
 
         internal fun clearCardBinding() {
             boundRequestKey = null
+            favoriteLongPressPolicy.reset()
         }
 
         internal fun isBoundTo(requestKey: String): Boolean {
@@ -226,7 +246,17 @@ class CardPresenter(
             return true
         }
 
+        internal fun onFavoriteKey(
+            keyCode: Int,
+            action: Int,
+            repeatCount: Int,
+            isLongPress: Boolean
+        ): FavoriteLongPressResult {
+            return favoriteLongPressPolicy.onKey(keyCode, action, repeatCount, isLongPress)
+        }
+
         private var boundRequestKey: String? = null
+        private val favoriteLongPressPolicy = FavoriteLongPressPolicy()
     }
 
     /**
