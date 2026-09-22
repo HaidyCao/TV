@@ -48,4 +48,36 @@ class TvDataManagerTest {
 
         assertEquals(1, groups.getValue("4K超高清").size)
     }
+
+    @Test
+    fun `central channels group comes first while other groups keep their order`() {
+        val playlist = """
+            #EXTM3U
+            #EXTINF:-1,湖南卫视
+            http://example.test/live/hunan
+            #EXTINF:-1,CCTV 1
+            http://example.test/live/cctv1
+            #EXTINF:-1,BRTV文艺
+            http://example.test/live/brtv
+        """.trimIndent()
+
+        val groups = TvDataManager.parsePlaylist(playlist)
+
+        assertEquals(listOf("央视频道", "卫视综合", "北京频道"), groups.keys.toList())
+    }
+
+    @Test
+    fun `group order is unchanged when central channels are absent`() {
+        val playlist = """
+            #EXTM3U
+            #EXTINF:-1,湖南卫视
+            http://example.test/live/hunan
+            #EXTINF:-1,BRTV文艺
+            http://example.test/live/brtv
+        """.trimIndent()
+
+        val groups = TvDataManager.parsePlaylist(playlist)
+
+        assertEquals(listOf("卫视综合", "北京频道"), groups.keys.toList())
+    }
 }

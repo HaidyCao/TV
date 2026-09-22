@@ -392,8 +392,18 @@ object TvDataManager {
                 ?: inferCategory(title)
             groups.getOrPut(category) { mutableListOf() }.add(channel)
         }
-        
-        return groups.mapValues { (_, channelsInGroup) -> channelsInGroup.toList() }
+
+        val orderedGroups = linkedMapOf<String, MutableList<Movie>>()
+        groups["央视频道"]?.let { channelsInGroup ->
+            orderedGroups["央视频道"] = channelsInGroup
+        }
+        groups.forEach { (category, channelsInGroup) ->
+            if (category != "央视频道") {
+                orderedGroups[category] = channelsInGroup
+            }
+        }
+
+        return orderedGroups.mapValues { (_, channelsInGroup) -> channelsInGroup.toList() }
     }
 
     private fun inferCategory(title: String): String {
