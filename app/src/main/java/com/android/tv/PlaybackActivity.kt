@@ -3,6 +3,7 @@ package com.android.tv
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
@@ -27,6 +28,7 @@ class PlaybackActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private var currentChannel: Movie? = null
     private var playbackUiState = PlaybackUiState.CONNECTING
+    private var channelOverlayState = PlaybackChannelOverlayPolicy.hidden()
     private val overlayHandler = Handler(Looper.getMainLooper())
     private var hideChannelOverlay: Runnable? = null
 
@@ -95,7 +97,7 @@ class PlaybackActivity : AppCompatActivity() {
             playerView.player = createdPlayer
         }
 
-        playChannel(initialChannel)
+        playChannel(initialChannel, showOverlay = true)
         ChannelRepository.ensureLoaded(this)
     }
 
@@ -121,6 +123,14 @@ class PlaybackActivity : AppCompatActivity() {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             PlaybackChannelKeyPolicy.directionFor(event.keyCode)?.let { direction ->
                 switchChannel(direction)
+                return true
+            }
+            if (isConfirmKey(event.keyCode) &&
+                currentChannel != null &&
+                playbackUiState != PlaybackUiState.ERROR &&
+                playbackUiState != PlaybackUiState.ENDED
+            ) {
+                toggleChannelOverlay()
                 return true
             }
         }
@@ -240,10 +250,43 @@ class PlaybackActivity : AppCompatActivity() {
     private fun showChannelOverlay(channel: Movie) {
         channelTitle.text = channel.title
         channelCategory.text = channel.category ?: getString(R.string.live_badge)
+        channelOverlayState = PlaybackChannelOverlayPolicy.autoShown(SystemClock.uptimeMillis())
         channelOverlay.visibility = View.VISIBLE
         hideChannelOverlay?.let(overlayHandler::removeCallbacks)
-        hideChannelOverlay = Runnable { channelOverlay.visibility = View.GONE }
-        overlayHandler.postDelayed(hideChannelOverlay!!, CHANNEL_OVERLAY_DURATION_MS)
+        hideChannelOverlay = Runnable {
+            channelOverlayState = PlaybackChannelOverlayPolicy.hidden()
+            channelOverlay.visibility = View.GONE
+            hideChannelOverlay = null
+        }
+        overlayHandler.postDelayed(
+            hideChannelOverlay!!,
+            PlaybackChannelOverlayPolicy.AUTO_HIDE_DURATION_MILLIS
+        )
+    }
+
+    private fun toggleChannelOverlay() {
+        hideChannelOverlay?.let(overlayHandler::removeCallbacks)
+        hideChannelOverlay = null
+        channelOverlayState = PlaybackChannelOverlayPolicy.toggle(
+            state = channelOverlayState,
+            nowMillis = SystemClock.uptimeMillis()
+        )
+        channelOverlay.visibility = if (channelOverlayState.isVisible) View.VISIBLE else View.GONE
+        val autoHideAtMillis = channelOverlayState.autoHideAtMillis
+        if (autoHideAtMillis != null) {
+            val delayMillis = (autoHideAtMillis - SystemClock.uptimeMillis())
+                .coerceAtLeast(0L)
+            hideChannelOverlay = Runnable {
+                channelOverlayState = PlaybackChannelOverlayPolicy.hidden()
+                channelOverlay.visibility = View.GONE
+                hideChannelOverlay = null
+            }
+            overlayHandler.postDelayed(hideChannelOverlay!!, delayMillis)
+        }
+    }
+
+    private fun isConfirmKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
     }
 
     private fun enableImmersivePlayback() {
@@ -256,6 +299,5 @@ class PlaybackActivity : AppCompatActivity() {
 
     private companion object {
         const val TAG = "PlaybackActivity"
-        const val CHANNEL_OVERLAY_DURATION_MS = 2_500L
     }
 }

@@ -50,6 +50,15 @@
             android:textColor="#B7C5D9"
             android:textSize="14sp" />
 
+        <TextView
+            android:id="@+id/channel_switch_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/channel_switch_hint"
+            android:textColor="#90A2B8"
+            android:textSize="12sp" />
+
     </LinearLayout>
 
     <include layout="@layout/playback_status_overlay" />

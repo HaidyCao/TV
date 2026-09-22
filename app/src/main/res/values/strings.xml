@@ -55,7 +55,8 @@
     <string name="playback_invalid_channel">频道地址无效</string>
     <string name="playback_retry">重试</string>
     <string name="playback_back">返回频道列表</string>
-    <string name="channel_switch_label">正在切换至</string>
+    <string name="channel_switch_label">正在播放</string>
+    <string name="channel_switch_hint">确认键显示或隐藏频道信息 · 上下键切换频道</string>
     <string name="channel_switch_unavailable">没有可切换的频道</string>
     <string name="favorite_added">已收藏频道</string>
     <string name="favorite_removed">已取消收藏</string>
