@@ -58,15 +58,18 @@ class MainFragment : BrowseSupportFragment() {
     private var latestStatusMessage: String? = null
     private var savedFocusPosition: TvSavedFocusPosition? = null
     private var pendingFocusRestore: TvSavedFocusPosition? = null
+    private var pendingFavoriteFocusRestore: TvSavedFocusPosition? = null
     private var pendingResumeFocusRestore: TvSavedFocusPosition? = null
     private var initialFocusPending = false
     private var initialFocusApplied = false
+    private var focusRequestToken = 0L
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         initialFocusPending = false
         initialFocusApplied = false
         pendingFocusRestore = savedFocusPosition
+        pendingFavoriteFocusRestore = null
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
         livePreviewFrameStore = LivePreviewFrameStore()
@@ -171,6 +174,8 @@ class MainFragment : BrowseSupportFragment() {
         tvGroups: Map<String, List<Movie>>,
         statusMessage: String?
     ) {
+        focusRequestToken += 1L
+        initialFocusPending = false
         visibleLivePreviewController?.reset()
         tvChannelPreviewController?.stop()
         focusedPreviewMovie = null
@@ -269,36 +274,53 @@ class MainFragment : BrowseSupportFragment() {
     private fun requestInitialFocusIfNeeded() {
         if (initialFocusApplied || initialFocusPending) return
 
+        val restorePosition = pendingFavoriteFocusRestore ?: pendingFocusRestore
         val restoredTarget = TvFocusRestorePolicy.choose(
             latestGroups,
             favoriteKeys,
-            pendingFocusRestore
+            restorePosition
         )
         if (restoredTarget == null && TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) == null) {
             return
         }
         initialFocusPending = true
-        view?.post {
+        val requestToken = focusRequestToken
+        val rootView = view ?: run {
             initialFocusPending = false
-            if (initialFocusApplied || !isAdded) return@post
+            return
+        }
+        rootView.post {
+            initialFocusPending = false
+            if (requestToken != focusRequestToken || initialFocusApplied || !isAdded || view !== rootView) {
+                return@post
+            }
 
             val currentRestoredTarget = TvFocusRestorePolicy.choose(
                 latestGroups,
                 favoriteKeys,
-                pendingFocusRestore
+                pendingFavoriteFocusRestore ?: pendingFocusRestore
             )
             val currentTarget = currentRestoredTarget
                 ?: TvInitialFocusPolicy.choose(latestGroups, favoriteKeys)
                 ?: return@post
-            pendingFocusRestore = null
-            initialFocusApplied = true
             setSelectedPosition(
                 currentTarget.rowIndex,
                 false,
                 object : Presenter.ViewHolderTask() {
                     override fun run(viewHolder: Presenter.ViewHolder) {
+                        if (requestToken != focusRequestToken || !isAdded || view !== rootView) return
                         val listRowViewHolder = viewHolder as? ListRowPresenter.ViewHolder ?: return
-                        listRowViewHolder.gridView.setSelectedPosition(currentTarget.itemIndex)
+                        listRowViewHolder.gridView.setSelectedPosition(
+                            currentTarget.itemIndex,
+                            ViewHolderTask { selectedViewHolder ->
+                                if (requestToken == focusRequestToken && isAdded && view === rootView) {
+                                    selectedViewHolder.itemView.requestFocus()
+                                    pendingFocusRestore = null
+                                    pendingFavoriteFocusRestore = null
+                                    initialFocusApplied = true
+                                }
+                            }
+                        )
                     }
                 }
             )
@@ -359,6 +381,19 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     private fun toggleFavorite(channel: Movie) {
+        val focusPosition = TvFocusRestorePolicy.capture(
+            groups = latestGroups,
+            channel = channel,
+            previous = savedFocusPosition
+        )
+        if (focusPosition != null) {
+            // Freeze the identity before rebuilding rows. The favorite row may
+            // be inserted or removed, so row indexes alone are not stable.
+            savedFocusPosition = focusPosition
+            initialFocusApplied = false
+            initialFocusPending = false
+        }
+        pendingFavoriteFocusRestore = savedFocusPosition
         val added = ChannelFavorites.toggle(requireContext(), channel)
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         renderRows(latestGroups, latestStatusMessage)
@@ -447,7 +482,11 @@ class MainFragment : BrowseSupportFragment() {
         movie: Movie,
         row: Row
     ) {
-        if (pendingResumeFocusRestore != null) return
+        if (
+            pendingResumeFocusRestore != null ||
+            pendingFocusRestore != null ||
+            pendingFavoriteFocusRestore != null
+        ) return
         val channelKey = ChannelFavorites.favoriteKeyFor(movie) ?: return
         val headerName = row.headerItem?.name ?: return
         val isFavoritesRow = headerName == getString(R.string.favorite_channels)

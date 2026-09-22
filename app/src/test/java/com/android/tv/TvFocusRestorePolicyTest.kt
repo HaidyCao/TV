@@ -7,6 +7,32 @@ import org.junit.Test
 class TvFocusRestorePolicyTest {
 
     @Test
+    fun capture_and_restore_follow_the_channel_when_favorites_row_is_inserted() {
+        val selected = liveChannel(2)
+        val groups = linkedMapOf(
+            "新闻" to listOf(liveChannel(1), selected),
+            "体育" to listOf(liveChannel(3))
+        )
+
+        val saved = TvFocusRestorePolicy.capture(groups, selected, previous = null)
+        val target = TvFocusRestorePolicy.choose(
+            groups = groups,
+            favoriteKeys = setOf(requireNotNull(ChannelFavorites.favoriteKeyFor(selected))),
+            savedPosition = saved
+        )
+
+        assertEquals(
+            TvSavedFocusPosition(
+                channelKey = requireNotNull(ChannelFavorites.favoriteKeyFor(selected)),
+                groupName = "新闻",
+                rowKind = TvFocusRowKind.ORIGINAL_GROUP
+            ),
+            saved
+        )
+        assertEquals(TvInitialFocusTarget(rowIndex = 1, itemIndex = 1), target)
+    }
+
+    @Test
     fun restores_channel_in_original_group_with_favorites_row_offset() {
         val selected = liveChannel(2)
         val groups = linkedMapOf(

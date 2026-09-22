@@ -16,6 +16,30 @@ internal data class TvSavedFocusPosition(
 /** Resolves a saved TV home position into the row/item coordinates used by BrowseSupportFragment. */
 internal object TvFocusRestorePolicy {
 
+    /** Captures a stable channel identity before the rows are rebuilt. */
+    fun capture(
+        groups: Map<String, List<Movie>>,
+        channel: Movie,
+        previous: TvSavedFocusPosition?
+    ): TvSavedFocusPosition? {
+        val channelKey = ChannelFavorites.favoriteKeyFor(channel) ?: return null
+        val groupName = groups.entries.firstOrNull { (_, channels) ->
+            channels.any { candidate ->
+                ChannelFavorites.favoriteKeyFor(candidate) == channelKey
+            }
+        }?.key
+        val rowKind = if (previous?.channelKey == channelKey) {
+            previous.rowKind
+        } else {
+            TvFocusRowKind.ORIGINAL_GROUP
+        }
+        return TvSavedFocusPosition(
+            channelKey = channelKey,
+            groupName = groupName,
+            rowKind = rowKind
+        )
+    }
+
     fun choose(
         groups: Map<String, List<Movie>>,
         favoriteKeys: Set<String>,
