@@ -54,9 +54,13 @@ class MainFragment : BrowseSupportFragment() {
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
     private var latestStatusMessage: String? = null
+    private var initialFocusPending = false
+    private var initialFocusApplied = false
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        initialFocusPending = false
+        initialFocusApplied = false
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
         livePreviewFrameStore = LivePreviewFrameStore()
@@ -247,10 +251,35 @@ class MainFragment : BrowseSupportFragment() {
             )
         )
         adapter = rowsAdapter
+        requestInitialFocusIfNeeded()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
             ChannelPreviewPreferences.isEnabled(requireContext())
         ) {
             visibleLivePreviewController?.resume()
+        }
+    }
+
+    private fun requestInitialFocusIfNeeded() {
+        if (initialFocusApplied || initialFocusPending) return
+
+        val target = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) ?: return
+        initialFocusPending = true
+        view?.post {
+            initialFocusPending = false
+            if (initialFocusApplied || !isAdded) return@post
+
+            val currentTarget = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) ?: return@post
+            initialFocusApplied = true
+            setSelectedPosition(
+                currentTarget.rowIndex,
+                false,
+                object : Presenter.ViewHolderTask() {
+                    override fun run(viewHolder: Presenter.ViewHolder) {
+                        val listRowViewHolder = viewHolder as? ListRowPresenter.ViewHolder ?: return
+                        listRowViewHolder.gridView.setSelectedPosition(currentTarget.itemIndex)
+                    }
+                }
+            )
         }
     }
 
