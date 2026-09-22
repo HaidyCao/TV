@@ -39,6 +39,7 @@ class PlaybackActivity : AppCompatActivity() {
     private lateinit var statusOverlay: View
     private lateinit var statusMessage: TextView
     private lateinit var statusActionRow: View
+    private lateinit var nextChannelButton: Button
     private lateinit var retryButton: Button
     private lateinit var backButton: Button
 
@@ -50,6 +51,9 @@ class PlaybackActivity : AppCompatActivity() {
         bindViews()
         disablePlayerController()
 
+        nextChannelButton.setOnClickListener {
+            switchChannel(direction = PlaybackChannelKeyPolicy.NEXT_CHANNEL)
+        }
         retryButton.setOnClickListener { retryCurrentChannel() }
         backButton.setOnClickListener { finish() }
         renderPlaybackState()
@@ -154,6 +158,7 @@ class PlaybackActivity : AppCompatActivity() {
         statusOverlay = findViewById(R.id.playback_status_overlay)
         statusMessage = findViewById(R.id.playback_status_message)
         statusActionRow = findViewById(R.id.playback_action_row)
+        nextChannelButton = findViewById(R.id.playback_next_channel)
         retryButton = findViewById(R.id.playback_retry)
         backButton = findViewById(R.id.playback_back)
     }
@@ -208,11 +213,7 @@ class PlaybackActivity : AppCompatActivity() {
         playbackUiState = PlaybackUiState.ERROR
         statusMessage.text = message
         statusOverlay.visibility = View.VISIBLE
-        statusActionRow.visibility = View.VISIBLE
-        retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
-        backButton.visibility = View.VISIBLE
-        val focusTarget = if (canRetry) retryButton else backButton
-        focusTarget.post { focusTarget.requestFocus() }
+        renderStatusActions(canRetry = canRetry, requestFocus = true)
     }
 
     private fun renderPlaybackState() {
@@ -222,11 +223,11 @@ class PlaybackActivity : AppCompatActivity() {
             PlaybackUiState.PAUSED -> View.GONE
             else -> View.VISIBLE
         }
-        val canRetry = playbackUiState == PlaybackUiState.ENDED
-        statusActionRow.visibility = if (canRetry) View.VISIBLE else View.GONE
-        retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
-        backButton.visibility = if (canRetry) View.VISIBLE else View.GONE
-        if (canRetry) retryButton.post { retryButton.requestFocus() }
+        if (playbackUiState == PlaybackUiState.ENDED) {
+            renderStatusActions(canRetry = true, requestFocus = true)
+        } else {
+            hideStatusActions()
+        }
         statusMessage.text = when (playbackUiState) {
             PlaybackUiState.CONNECTING -> getString(R.string.playback_connecting)
             PlaybackUiState.BUFFERING -> getString(R.string.playback_buffering)
@@ -235,6 +236,33 @@ class PlaybackActivity : AppCompatActivity() {
             PlaybackUiState.PAUSED,
             PlaybackUiState.ERROR -> statusMessage.text
         }
+    }
+
+    private fun renderStatusActions(canRetry: Boolean, requestFocus: Boolean) {
+        val actions = TvPlaybackActionPolicy.resolve(
+            currentChannel = currentChannel,
+            channels = ChannelRepository.liveChannels(),
+            canRetry = canRetry
+        )
+        nextChannelButton.visibility = if (actions.hasNextChannel) View.VISIBLE else View.GONE
+        retryButton.visibility = if (actions.canRetry) View.VISIBLE else View.GONE
+        backButton.visibility = View.VISIBLE
+        statusActionRow.visibility = View.VISIBLE
+        if (requestFocus) {
+            val focusTarget = when (actions.primaryAction) {
+                TvPlaybackPrimaryAction.NEXT_CHANNEL -> nextChannelButton
+                TvPlaybackPrimaryAction.RETRY -> retryButton
+                TvPlaybackPrimaryAction.BACK -> backButton
+            }
+            focusTarget.post { focusTarget.requestFocus() }
+        }
+    }
+
+    private fun hideStatusActions() {
+        statusActionRow.visibility = View.GONE
+        nextChannelButton.visibility = View.GONE
+        retryButton.visibility = View.GONE
+        backButton.visibility = View.GONE
     }
 
     private fun disablePlayerController() {

@@ -54,6 +54,7 @@
     <string name="playback_failed_generic">播放失败：直播源暂时不可用，请重试或返回频道列表</string>
     <string name="playback_invalid_channel">频道地址无效</string>
     <string name="playback_retry">重试</string>
+    <string name="playback_next_channel">下一频道</string>
     <string name="playback_back">返回频道列表</string>
     <string name="channel_switch_label">正在播放</string>
     <string name="channel_switch_hint">确认键显示或隐藏频道信息 · 上下键切换频道</string>

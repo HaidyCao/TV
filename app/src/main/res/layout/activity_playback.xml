@@ -63,6 +63,6 @@
 
     </LinearLayout>
 
-    <include layout="@layout/playback_status_overlay" />
+    <include layout="@layout/playback_status_overlay_tv" />
 
 </FrameLayout>
