@@ -119,18 +119,9 @@ class PlaybackActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_CHANNEL_UP,
-                KeyEvent.KEYCODE_PAGE_UP -> {
-                    switchChannel(direction = -1)
-                    return true
-                }
-
-                KeyEvent.KEYCODE_CHANNEL_DOWN,
-                KeyEvent.KEYCODE_PAGE_DOWN -> {
-                    switchChannel(direction = 1)
-                    return true
-                }
+            PlaybackChannelKeyPolicy.directionFor(event.keyCode)?.let { direction ->
+                switchChannel(direction)
+                return true
             }
         }
         return super.dispatchKeyEvent(event)
