@@ -25,13 +25,14 @@ internal object PreviewPlayerFactory {
         val trackParameters = trackSelector.buildUponParameters()
         if (lowResolution) {
             trackParameters.setMaxVideoSize(STATIC_MAX_VIDEO_WIDTH, STATIC_MAX_VIDEO_HEIGHT)
-            trackParameters.setForceLowestBitrate(true)
         } else {
             trackParameters.setMaxVideoSize(MAX_VIDEO_WIDTH, MAX_VIDEO_HEIGHT)
+            trackParameters.setForceLowestBitrate(true)
         }
         // Static captures prefer 360p, but must still work when a stream only
-        // advertises 720p/1080p variants. Lowest bitrate remains enabled, so
-        // this fallback does not opt into a higher-quality representation.
+        // advertises 720p/1080p variants. Do not force the lowest bitrate:
+        // some sources expose an unusable low-bitrate variant while a higher
+        // variant from the same manifest can render normally.
         trackParameters.setExceedVideoConstraintsIfNecessary(lowResolution)
         trackParameters.setExceedRendererCapabilitiesIfNecessary(false)
         trackParameters.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)

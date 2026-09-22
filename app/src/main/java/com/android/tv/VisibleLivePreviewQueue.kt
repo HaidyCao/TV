@@ -38,11 +38,21 @@ internal class VisibleLivePreviewRequestQueue {
     fun remove(videoUrl: String): Boolean = requests.remove(videoUrl) != null
 
     fun poll(): VisibleLivePreviewRequest? {
+        return pollSkipping(emptySet())
+    }
+
+    /**
+     * Removes blocked URLs while selecting the next request. A failed static
+     * capture must never leave a stale request ahead of other visible work.
+     */
+    fun pollSkipping(blockedUrls: Set<String>): VisibleLivePreviewRequest? {
         val iterator = requests.entries.iterator()
-        if (!iterator.hasNext()) return null
-        val request = iterator.next().value
-        iterator.remove()
-        return request
+        while (iterator.hasNext()) {
+            val request = iterator.next().value
+            iterator.remove()
+            if (request.videoUrl !in blockedUrls) return request
+        }
+        return null
     }
 
     fun removeIf(predicate: (VisibleLivePreviewRequest) -> Boolean) {

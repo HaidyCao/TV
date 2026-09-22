@@ -52,4 +52,17 @@ class VisibleLivePreviewQueueTest {
         assertEquals("https://example.test/current.m3u8", queue.poll()?.videoUrl)
         assertEquals(0, queue.size)
     }
+
+    @Test
+    fun failed_url_is_skipped_so_later_visible_url_can_start() {
+        val queue = VisibleLivePreviewRequestQueue()
+        queue.enqueue("https://example.test/stalled.m3u8")
+        queue.enqueue("https://example.test/next-row.m3u8")
+
+        assertEquals(
+            "https://example.test/next-row.m3u8",
+            queue.pollSkipping(setOf("https://example.test/stalled.m3u8"))?.videoUrl
+        )
+        assertNull(queue.poll())
+    }
 }

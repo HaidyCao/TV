@@ -112,7 +112,7 @@ internal class VisibleLivePreviewController(
         enqueueEligibleUrls()
 
         while (true) {
-            val request = requestQueue.poll() ?: return
+            val request = requestQueue.pollSkipping(failedUrls) ?: return
             if (frameStore.get(request.videoUrl) != null) {
                 removeTargetsForUrl(request.videoUrl)
                 continue
@@ -348,6 +348,8 @@ internal class VisibleLivePreviewController(
 
     companion object {
         private const val TAG = "VisibleLivePreview"
-        private const val STATIC_CAPTURE_TIMEOUT_MS = 6_000L
+        // A stalled URL must yield the single capture slot quickly so that
+        // another currently visible row can still receive a static frame.
+        private const val STATIC_CAPTURE_TIMEOUT_MS = 2_500L
     }
 }
