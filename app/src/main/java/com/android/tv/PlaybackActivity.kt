@@ -48,6 +48,7 @@ class PlaybackActivity : AppCompatActivity() {
         enableImmersivePlayback()
         setContentView(R.layout.activity_playback)
         bindViews()
+        disablePlayerController()
 
         retryButton.setOnClickListener { retryCurrentChannel() }
         backButton.setOnClickListener { finish() }
@@ -205,7 +206,6 @@ class PlaybackActivity : AppCompatActivity() {
 
     private fun showPlaybackError(message: String, canRetry: Boolean) {
         playbackUiState = PlaybackUiState.ERROR
-        setPlayerControllerEnabled(false)
         statusMessage.text = message
         statusOverlay.visibility = View.VISIBLE
         statusActionRow.visibility = View.VISIBLE
@@ -217,7 +217,6 @@ class PlaybackActivity : AppCompatActivity() {
 
     private fun renderPlaybackState() {
         if (playbackUiState == PlaybackUiState.ERROR) return
-        setPlayerControllerEnabled(playbackUiState != PlaybackUiState.ENDED)
         statusOverlay.visibility = when (playbackUiState) {
             PlaybackUiState.PLAYING,
             PlaybackUiState.PAUSED -> View.GONE
@@ -238,13 +237,11 @@ class PlaybackActivity : AppCompatActivity() {
         }
     }
 
-    private fun setPlayerControllerEnabled(enabled: Boolean) {
-        playerView.useController = enabled
-        playerView.isFocusable = enabled
-        playerView.isFocusableInTouchMode = enabled
-        if (!enabled) {
-            playerView.clearFocus()
-        }
+    private fun disablePlayerController() {
+        playerView.useController = false
+        playerView.isFocusable = false
+        playerView.isFocusableInTouchMode = false
+        playerView.clearFocus()
     }
 
     private fun showChannelOverlay(channel: Movie) {
