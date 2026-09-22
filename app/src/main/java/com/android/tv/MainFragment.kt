@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.ActivityOptionsCompat
@@ -27,6 +28,7 @@ import androidx.leanback.widget.OnItemViewSelectedListener
 import androidx.leanback.widget.Presenter
 import androidx.leanback.widget.Row
 import androidx.leanback.widget.RowPresenter
+import androidx.leanback.widget.ViewHolderTask
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -54,6 +56,9 @@ class MainFragment : BrowseSupportFragment() {
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
     private var latestStatusMessage: String? = null
+    private var savedFocusPosition: TvSavedFocusPosition? = null
+    private var pendingFocusRestore: TvSavedFocusPosition? = null
+    private var pendingResumeFocusRestore: TvSavedFocusPosition? = null
     private var initialFocusPending = false
     private var initialFocusApplied = false
 
@@ -61,6 +66,7 @@ class MainFragment : BrowseSupportFragment() {
         super.onViewCreated(view, savedInstanceState)
         initialFocusPending = false
         initialFocusApplied = false
+        pendingFocusRestore = savedFocusPosition
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
         livePreviewFrameStore = LivePreviewFrameStore()
@@ -97,6 +103,7 @@ class MainFragment : BrowseSupportFragment() {
             favoriteKeys = updatedFavorites
             renderRows(latestGroups, latestStatusMessage)
         }
+        requestSavedFocusRestore()
     }
 
     override fun onPause() {
@@ -262,13 +269,28 @@ class MainFragment : BrowseSupportFragment() {
     private fun requestInitialFocusIfNeeded() {
         if (initialFocusApplied || initialFocusPending) return
 
-        val target = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) ?: return
+        val restoredTarget = TvFocusRestorePolicy.choose(
+            latestGroups,
+            favoriteKeys,
+            pendingFocusRestore
+        )
+        if (restoredTarget == null && TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) == null) {
+            return
+        }
         initialFocusPending = true
         view?.post {
             initialFocusPending = false
             if (initialFocusApplied || !isAdded) return@post
 
-            val currentTarget = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) ?: return@post
+            val currentRestoredTarget = TvFocusRestorePolicy.choose(
+                latestGroups,
+                favoriteKeys,
+                pendingFocusRestore
+            )
+            val currentTarget = currentRestoredTarget
+                ?: TvInitialFocusPolicy.choose(latestGroups, favoriteKeys)
+                ?: return@post
+            pendingFocusRestore = null
             initialFocusApplied = true
             setSelectedPosition(
                 currentTarget.rowIndex,
@@ -277,6 +299,50 @@ class MainFragment : BrowseSupportFragment() {
                     override fun run(viewHolder: Presenter.ViewHolder) {
                         val listRowViewHolder = viewHolder as? ListRowPresenter.ViewHolder ?: return
                         listRowViewHolder.gridView.setSelectedPosition(currentTarget.itemIndex)
+                    }
+                }
+            )
+        }
+    }
+
+    private fun requestSavedFocusRestore() {
+        val savedPosition = pendingResumeFocusRestore ?: return
+        val target = TvFocusRestorePolicy.choose(latestGroups, favoriteKeys, savedPosition)
+            ?: run {
+                pendingResumeFocusRestore = null
+                return
+            }
+        if (!isAdded) return
+        val rootView = view ?: return
+        rootView.post {
+            if (!isAdded || view !== rootView) return@post
+            rootView.viewTreeObserver.addOnPreDrawListener(
+                object : ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        rootView.viewTreeObserver.removeOnPreDrawListener(this)
+                        if (!isAdded || view !== rootView) return true
+                        setSelectedPosition(
+                            target.rowIndex,
+                            false,
+                            object : Presenter.ViewHolderTask() {
+                                override fun run(viewHolder: Presenter.ViewHolder) {
+                                    val listRowViewHolder =
+                                        viewHolder as? ListRowPresenter.ViewHolder ?: return
+                                    listRowViewHolder.gridView.setSelectedPosition(
+                                        target.itemIndex,
+                                        ViewHolderTask { selectedViewHolder ->
+                                            selectedViewHolder.itemView.requestFocus()
+                                            rootView.post {
+                                                if (pendingResumeFocusRestore == savedPosition) {
+                                                    pendingResumeFocusRestore = null
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                        return true
                     }
                 }
             )
@@ -307,10 +373,8 @@ class MainFragment : BrowseSupportFragment() {
         setOnSearchClickedListener {
             visibleLivePreviewController?.pause()
             tvChannelPreviewController?.stop()
-            requireActivity().supportFragmentManager.beginTransaction()
-                .replace(R.id.main_browse_fragment, SearchFragment())
-                .addToBackStack(null)
-                .commit()
+            pendingResumeFocusRestore = savedFocusPosition
+            startActivity(Intent(requireActivity(), SearchActivity::class.java))
         }
         onItemViewClickedListener = ItemViewClickedListener()
         onItemViewSelectedListener = ItemViewSelectedListener()
@@ -364,6 +428,7 @@ class MainFragment : BrowseSupportFragment() {
             row: Row
         ) {
             if (item is Movie) {
+                rememberFocusPosition(item, row)
                 backgroundUri = item.backgroundImageUrl
                 scheduleBackgroundUpdate()
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
@@ -376,6 +441,32 @@ class MainFragment : BrowseSupportFragment() {
                 visibleLivePreviewController?.pause()
             }
         }
+    }
+
+    private fun rememberFocusPosition(
+        movie: Movie,
+        row: Row
+    ) {
+        if (pendingResumeFocusRestore != null) return
+        val channelKey = ChannelFavorites.favoriteKeyFor(movie) ?: return
+        val headerName = row.headerItem?.name ?: return
+        val isFavoritesRow = headerName == getString(R.string.favorite_channels)
+        val originalGroupName = latestGroups.entries.firstOrNull { (_, channels) ->
+            channels.any { channel ->
+                ChannelFavorites.favoriteKeyFor(channel) == channelKey
+            }
+        }?.key
+        val rowKind = if (isFavoritesRow) {
+            TvFocusRowKind.FAVORITES
+        } else {
+            TvFocusRowKind.ORIGINAL_GROUP
+        }
+        val groupName = originalGroupName ?: headerName.takeUnless { isFavoritesRow }
+        savedFocusPosition = TvSavedFocusPosition(
+            channelKey = channelKey,
+            groupName = groupName,
+            rowKind = rowKind
+        )
     }
 
     private fun scheduleBackgroundUpdate() {
