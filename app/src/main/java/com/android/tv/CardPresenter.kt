@@ -11,6 +11,7 @@ import android.view.KeyEvent
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import com.bumptech.glide.Glide
 import kotlin.properties.Delegates
 
@@ -24,7 +25,8 @@ class CardPresenter(
     private val isFavorite: (Movie) -> Boolean = { false },
     private val onFavoriteToggle: ((Movie) -> Unit)? = null,
     private val onCardUnbound: ((CardViewHolder) -> Unit)? = null,
-    private val onCardFocusChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null
+    private val onCardFocusChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null,
+    private val onCardVisibilityChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null
 ) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
     private var mLiveCardImage: Drawable? = null
@@ -58,6 +60,7 @@ class CardPresenter(
         // Leanback may reuse a holder without a visible transition. Detach any
         // preview surface before painting the new channel into that holder.
         holder.setCardFocusChangedListener(null)
+        holder.setCardVisibilityChangedListener(null)
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
         holder.clearCardBinding()
@@ -88,6 +91,9 @@ class CardPresenter(
         
         val requestKey = "${movie.id}:${movie.videoUrl.orEmpty()}"
         holder.bindCard(requestKey)
+        holder.setCardVisibilityChangedListener { isVisible ->
+            onCardVisibilityChanged?.invoke(movie, holder, isVisible)
+        }
         val imageView = cardView.mainImageView ?: return
         imageView.tag = requestKey
         imageView.visibility = View.VISIBLE
@@ -138,6 +144,7 @@ class CardPresenter(
         Log.d(TAG, "onUnbindViewHolder")
         val holder = viewHolder as CardViewHolder
         holder.setCardFocusChangedListener(null)
+        holder.setCardVisibilityChangedListener(null)
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
         holder.clearCardBinding()
@@ -195,20 +202,83 @@ class CardPresenter(
             cardView.setCardFocusChangedListener(listener)
         }
 
+        fun setCardVisibilityChangedListener(listener: ((Boolean) -> Unit)?) {
+            cardView.setCardVisibilityChangedListener(listener)
+        }
+
+        internal fun isActuallyVisible(): Boolean = cardView.isActuallyVisible()
+
+        internal fun isFocused(): Boolean = cardView.hasFocus()
+
+        internal fun showCapturedPreviewFrameIfVisibleAndUnfocused(
+            requestKey: String,
+            bitmap: Bitmap
+        ): Boolean {
+            if (!isBoundTo(requestKey) || isFocused() || !isActuallyVisible()) return false
+            cardView.showCapturedPreviewFrame(bitmap)
+            return true
+        }
+
         private var boundRequestKey: String? = null
     }
 
     /**
      * ImageCardView with a surface restricted to the main image rectangle.
-     * The surface is transparent until the player reports its first frame.
+     * The main image covers the live surface until the player reports its
+     * first frame, while the TextureView itself remains renderable.
      */
     internal open class PreviewCardView(context: android.content.Context) : ImageCardView(context) {
         var previewTextureView: TextureView? = null
             private set
         private var cardFocusChangedListener: ((Boolean) -> Unit)? = null
+        private var cardVisibilityChangedListener: ((Boolean) -> Unit)? = null
+        private var previewFrameShown = false
+        private val visibilityObserver = ViewTreeObserver.OnGlobalLayoutListener {
+            dispatchVisibilityChanged()
+        }
+        private val scrollObserver = ViewTreeObserver.OnScrollChangedListener {
+            dispatchVisibilityChanged()
+        }
 
         fun setCardFocusChangedListener(listener: ((Boolean) -> Unit)?) {
             cardFocusChangedListener = listener
+        }
+
+        fun setCardVisibilityChangedListener(listener: ((Boolean) -> Unit)?) {
+            cardVisibilityChangedListener = listener
+            listener?.invoke(isActuallyVisible())
+        }
+
+        fun isActuallyVisible(): Boolean {
+            if (!isAttachedToWindow || !isShown || width <= 0 || height <= 0) return false
+            val visibleRect = android.graphics.Rect()
+            return getGlobalVisibleRect(visibleRect) &&
+                visibleRect.width() > 0 && visibleRect.height() > 0
+        }
+
+        private fun dispatchVisibilityChanged() {
+            cardVisibilityChangedListener?.invoke(isActuallyVisible())
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            viewTreeObserver.addOnGlobalLayoutListener(visibilityObserver)
+            viewTreeObserver.addOnScrollChangedListener(scrollObserver)
+            dispatchVisibilityChanged()
+        }
+
+        override fun onDetachedFromWindow() {
+            if (viewTreeObserver.isAlive) {
+                viewTreeObserver.removeOnGlobalLayoutListener(visibilityObserver)
+                viewTreeObserver.removeOnScrollChangedListener(scrollObserver)
+            }
+            cardVisibilityChangedListener?.invoke(false)
+            super.onDetachedFromWindow()
+        }
+
+        override fun onVisibilityChanged(changedView: View, visibility: Int) {
+            super.onVisibilityChanged(changedView, visibility)
+            dispatchVisibilityChanged()
         }
 
         override fun onFocusChanged(
@@ -239,12 +309,27 @@ class CardPresenter(
                     paddingTop + CARD_HEIGHT
                 )
             }
+            if (!previewFrameShown) {
+                mainImageView?.alpha = if (previewTextureView?.visibility == View.VISIBLE) {
+                    PREVIEW_COVER_ALPHA
+                } else {
+                    1f
+                }
+                mainImageView?.bringToFront()
+            }
+            dispatchVisibilityChanged()
         }
 
         fun ensurePreviewTexture(): TextureView {
             previewTextureView?.let { textureView ->
                 textureView.visibility = View.VISIBLE
-                textureView.alpha = 0f
+                textureView.alpha = 1f
+                if (previewFrameShown) {
+                    textureView.bringToFront()
+                } else {
+                    mainImageView?.alpha = PREVIEW_COVER_ALPHA
+                    mainImageView?.bringToFront()
+                }
                 return textureView
             }
 
@@ -256,16 +341,22 @@ class CardPresenter(
                 textureView.isLongClickable = false
                 textureView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 textureView.visibility = View.VISIBLE
-                textureView.alpha = 0f
+                textureView.alpha = 1f
                 addView(textureView)
                 previewTextureView = textureView
+                // Keep the surface alive and renderable, but cover it until
+                // the player confirms that a real frame has arrived.
+                mainImageView?.alpha = PREVIEW_COVER_ALPHA
+                mainImageView?.bringToFront()
             }
         }
 
         fun showPreviewFrame() {
+            previewFrameShown = true
             previewTextureView?.let { textureView ->
                 textureView.visibility = View.VISIBLE
                 textureView.alpha = 1f
+                textureView.bringToFront()
             }
             // Keep the main image in the card's layout so Leanback does not
             // move the title area up when the artwork is replaced.
@@ -274,12 +365,14 @@ class CardPresenter(
         }
 
         fun hidePreviewFrame() {
+            previewFrameShown = false
             previewTextureView?.let { textureView ->
-                textureView.alpha = 0f
+                textureView.alpha = 1f
                 textureView.visibility = View.GONE
             }
             mainImageView?.alpha = 1f
             mainImageView?.visibility = View.VISIBLE
+            mainImageView?.bringToFront()
         }
 
         fun showCapturedPreviewFrame(bitmap: Bitmap) {
@@ -291,10 +384,12 @@ class CardPresenter(
         }
 
         fun resetPreviewLayer() {
+            previewFrameShown = false
             previewTextureView?.let(::removeView)
             previewTextureView = null
             mainImageView?.alpha = 1f
             mainImageView?.visibility = View.VISIBLE
+            mainImageView?.bringToFront()
         }
     }
 
@@ -311,5 +406,8 @@ class CardPresenter(
 
         private val CARD_WIDTH = 313
         private val CARD_HEIGHT = 176
+        // A nearly opaque cover keeps the TextureView in Honor's composition
+        // path while leaving the user-visible card image effectively unchanged.
+        private const val PREVIEW_COVER_ALPHA = 0.99f
     }
 }

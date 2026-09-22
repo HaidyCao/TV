@@ -47,6 +47,7 @@ class MainFragment : BrowseSupportFragment() {
     private var previewFrameManager: PreviewFrameManager? = null
     private var livePreviewFrameStore: LivePreviewFrameStore? = null
     private var tvChannelPreviewController: TvChannelPreviewController? = null
+    private var visibleLivePreviewController: VisibleLivePreviewController? = null
     private var focusedPreviewMovie: Movie? = null
     private var focusedPreviewHolder: CardPresenter.CardViewHolder? = null
     private var favoriteKeys: Set<String> = emptySet()
@@ -62,6 +63,10 @@ class MainFragment : BrowseSupportFragment() {
             requireContext(),
             frameStore = livePreviewFrameStore!!
         )
+        visibleLivePreviewController = VisibleLivePreviewController(
+            requireContext(),
+            frameStore = livePreviewFrameStore!!
+        )
         prepareBackgroundManager()
         setupUiElements()
         setupEventListeners()
@@ -73,7 +78,9 @@ class MainFragment : BrowseSupportFragment() {
         super.onResume()
         if (!ChannelPreviewPreferences.isEnabled(requireContext())) {
             tvChannelPreviewController?.stop()
+            visibleLivePreviewController?.pause()
         } else {
+            visibleLivePreviewController?.resume()
             val movie = focusedPreviewMovie
             val holder = focusedPreviewHolder
             if (movie != null && holder != null && holder.cardView.hasFocus()) {
@@ -88,6 +95,7 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     override fun onPause() {
+        visibleLivePreviewController?.pause()
         tvChannelPreviewController?.stop()
         super.onPause()
     }
@@ -95,6 +103,8 @@ class MainFragment : BrowseSupportFragment() {
     override fun onDestroyView() {
         backgroundUpdate?.let(backgroundHandler::removeCallbacks)
         backgroundUpdate = null
+        visibleLivePreviewController?.release()
+        visibleLivePreviewController = null
         tvChannelPreviewController?.release()
         tvChannelPreviewController = null
         focusedPreviewMovie = null
@@ -148,6 +158,7 @@ class MainFragment : BrowseSupportFragment() {
         tvGroups: Map<String, List<Movie>>,
         statusMessage: String?
     ) {
+        visibleLivePreviewController?.reset()
         tvChannelPreviewController?.stop()
         focusedPreviewMovie = null
         focusedPreviewHolder = null
@@ -167,6 +178,7 @@ class MainFragment : BrowseSupportFragment() {
             onCardUnbound = ::onCardUnbound,
             onCardFocusChanged = { movie, holder, hasFocus ->
                 if (hasFocus) {
+                    visibleLivePreviewController?.cancel(holder)
                     focusedPreviewMovie = movie
                     focusedPreviewHolder = holder
                 } else if (focusedPreviewHolder === holder) {
@@ -174,9 +186,27 @@ class MainFragment : BrowseSupportFragment() {
                     focusedPreviewHolder = null
                 }
                 if (hasFocus && ChannelPreviewPreferences.isEnabled(holder.cardView.context)) {
+                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                        visibleLivePreviewController?.resume()
+                    }
                     tvChannelPreviewController?.schedule(movie, holder)
                 } else {
                     tvChannelPreviewController?.stopIfAttached(holder)
+                    if (ChannelPreviewPreferences.isEnabled(holder.cardView.context)) {
+                        visibleLivePreviewController?.request(movie, holder)
+                    } else {
+                        visibleLivePreviewController?.cancel(holder)
+                    }
+                }
+            },
+            onCardVisibilityChanged = { movie, holder, isVisible ->
+                if (isVisible &&
+                    ChannelPreviewPreferences.isEnabled(holder.cardView.context) &&
+                    !holder.isFocused()
+                ) {
+                    visibleLivePreviewController?.request(movie, holder)
+                } else {
+                    visibleLivePreviewController?.cancel(holder)
                 }
             }
         )
@@ -214,9 +244,15 @@ class MainFragment : BrowseSupportFragment() {
             )
         )
         adapter = rowsAdapter
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            ChannelPreviewPreferences.isEnabled(requireContext())
+        ) {
+            visibleLivePreviewController?.resume()
+        }
     }
 
     private fun onCardUnbound(holder: CardPresenter.CardViewHolder) {
+        visibleLivePreviewController?.cancel(holder)
         if (focusedPreviewHolder === holder) {
             focusedPreviewMovie = null
             focusedPreviewHolder = null
@@ -237,6 +273,7 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun setupEventListeners() {
         setOnSearchClickedListener {
+            visibleLivePreviewController?.pause()
             tvChannelPreviewController?.stop()
             requireActivity().supportFragmentManager.beginTransaction()
                 .replace(R.id.main_browse_fragment, SearchFragment())
@@ -255,6 +292,7 @@ class MainFragment : BrowseSupportFragment() {
             row: Row
         ) {
             tvChannelPreviewController?.stop()
+            visibleLivePreviewController?.pause()
             when (item) {
                 is Movie -> openMovie(item, itemViewHolder)
                 is String -> if (item == getString(R.string.personal_settings)) {
@@ -296,8 +334,14 @@ class MainFragment : BrowseSupportFragment() {
             if (item is Movie) {
                 backgroundUri = item.backgroundImageUrl
                 scheduleBackgroundUpdate()
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                    ChannelPreviewPreferences.isEnabled(requireContext())
+                ) {
+                    visibleLivePreviewController?.resume()
+                }
             } else {
                 tvChannelPreviewController?.stop()
+                visibleLivePreviewController?.pause()
             }
         }
     }
