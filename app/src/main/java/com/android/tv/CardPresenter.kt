@@ -12,8 +12,8 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
+import android.view.animation.DecelerateInterpolator
 import com.bumptech.glide.Glide
-import kotlin.properties.Delegates
 
 /**
  * A CardPresenter is used to generate Views and bind Objects to them on demand.
@@ -30,15 +30,10 @@ class CardPresenter(
 ) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
     private var mLiveCardImage: Drawable? = null
-    private var sSelectedBackgroundColor: Int by Delegates.notNull()
-    private var sDefaultBackgroundColor: Int by Delegates.notNull()
 
     override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {
         Log.d(TAG, "onCreateViewHolder")
 
-        sDefaultBackgroundColor = ContextCompat.getColor(parent.context, R.color.default_background)
-        sSelectedBackgroundColor =
-            ContextCompat.getColor(parent.context, R.color.selected_background)
         mDefaultCardImage = ContextCompat.getDrawable(parent.context, R.drawable.movie)
         mLiveCardImage = ContextCompat.getDrawable(parent.context, R.drawable.channel_placeholder)
 
@@ -51,7 +46,9 @@ class CardPresenter(
 
         cardView.isFocusable = true
         cardView.isFocusableInTouchMode = true
+        cardView.elevation = CARD_ELEVATION_DP * parent.resources.displayMetrics.density
         updateCardBackgroundColor(cardView, false)
+        cardView.refreshFocusVisual(animate = false)
         return CardViewHolder(cardView)
     }
 
@@ -64,13 +61,16 @@ class CardPresenter(
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
         holder.clearCardBinding()
+        holder.resetFocusVisual()
         if (item == null) return
         val movie = item as Movie
         val cardView = holder.cardView
 
         Log.d(TAG, "onBindViewHolder")
-        cardView.titleText = movie.title
-        cardView.contentText = movie.studio
+        cardView.titleText = movie.title?.trim().orEmpty().ifBlank {
+            cardView.context.getString(R.string.channel_placeholder_label)
+        }
+        cardView.setCardContentText(movie.studio.takeUnless { movie.isLive })
         cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
         cardView.badgeImage = if (isFavorite(movie)) {
             ContextCompat.getDrawable(cardView.context, R.drawable.ic_favorite)
@@ -91,6 +91,7 @@ class CardPresenter(
         
         val requestKey = "${movie.id}:${movie.videoUrl.orEmpty()}"
         holder.bindCard(requestKey)
+        holder.refreshFocusVisual(animate = false)
         holder.setCardVisibilityChangedListener { isVisible ->
             onCardVisibilityChanged?.invoke(movie, holder, isVisible)
         }
@@ -148,6 +149,7 @@ class CardPresenter(
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
         holder.clearCardBinding()
+        holder.resetFocusVisual()
         val cardView = holder.cardView
         // Remove references to images so that the garbage collector can free up memory
         cardView.mainImageView?.let { imageView ->
@@ -206,6 +208,10 @@ class CardPresenter(
             cardView.setCardVisibilityChangedListener(listener)
         }
 
+        internal fun resetFocusVisual() = cardView.resetFocusVisual()
+
+        internal fun refreshFocusVisual(animate: Boolean) = cardView.refreshFocusVisual(animate)
+
         internal fun isActuallyVisible(): Boolean = cardView.isActuallyVisible()
 
         internal fun isFocused(): Boolean = cardView.hasFocus()
@@ -227,7 +233,9 @@ class CardPresenter(
      * The main image covers the live surface until the player reports its
      * first frame, while the TextureView itself remains renderable.
      */
-    internal open class PreviewCardView(context: android.content.Context) : ImageCardView(context) {
+    internal open class PreviewCardView(
+        context: android.content.Context
+    ) : ImageCardView(context) {
         var previewTextureView: TextureView? = null
             private set
         private var cardFocusChangedListener: ((Boolean) -> Unit)? = null
@@ -238,6 +246,48 @@ class CardPresenter(
         }
         private val scrollObserver = ViewTreeObserver.OnScrollChangedListener {
             dispatchVisibilityChanged()
+        }
+
+        fun setCardContentText(text: CharSequence?) {
+            contentText = text
+            findViewById<View>(androidx.leanback.R.id.content_text)?.visibility =
+                if (text.isNullOrBlank()) View.GONE else View.VISIBLE
+        }
+
+        fun resetFocusVisual() {
+            animate().cancel()
+            foreground = null
+            scaleX = 1f
+            scaleY = 1f
+            elevation = CARD_ELEVATION_DP * resources.displayMetrics.density
+        }
+
+        fun refreshFocusVisual(animate: Boolean) {
+            val focused = hasFocus()
+            foreground = if (focused) {
+                ContextCompat.getDrawable(context, R.drawable.tv_card_focus_foreground)
+            } else {
+                null
+            }
+            val targetScale = if (focused) FOCUS_SCALE else 1f
+            val targetElevation = if (focused) {
+                FOCUS_ELEVATION_DP * resources.displayMetrics.density
+            } else {
+                CARD_ELEVATION_DP * resources.displayMetrics.density
+            }
+            elevation = targetElevation
+            animate().cancel()
+            if (!animate) {
+                scaleX = targetScale
+                scaleY = targetScale
+                return
+            }
+            animate()
+                .scaleX(targetScale)
+                .scaleY(targetScale)
+                .setDuration(FOCUS_ANIMATION_DURATION_MS)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
         }
 
         fun setCardFocusChangedListener(listener: ((Boolean) -> Unit)?) {
@@ -287,6 +337,7 @@ class CardPresenter(
             previouslyFocusedRect: android.graphics.Rect?
         ) {
             super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+            refreshFocusVisual(animate = true)
             cardFocusChangedListener?.invoke(gainFocus)
         }
 
@@ -394,9 +445,8 @@ class CardPresenter(
     }
 
     private fun updateCardBackgroundColor(view: ImageCardView, selected: Boolean) {
-        val color = if (selected) sSelectedBackgroundColor else sDefaultBackgroundColor
-        // Both background colors should be set because the view"s background is temporarily visible
-        // during animations.
+        val color = ContextCompat.getColor(view.context, R.color.card_info_background)
+        // Keep the selected info panel dark; focus is represented by the foreground drawable.
         view.setBackgroundColor(color)
         view.setInfoAreaBackgroundColor(color)
     }
@@ -406,6 +456,10 @@ class CardPresenter(
 
         private val CARD_WIDTH = 313
         private val CARD_HEIGHT = 176
+        private const val FOCUS_SCALE = 1.05f
+        private const val FOCUS_ANIMATION_DURATION_MS = 140L
+        private const val CARD_ELEVATION_DP = 2f
+        private const val FOCUS_ELEVATION_DP = 10f
         // A nearly opaque cover keeps the TextureView in Honor's composition
         // path while leaving the user-visible card image effectively unchanged.
         private const val PREVIEW_COVER_ALPHA = 0.99f
