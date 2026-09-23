@@ -23,10 +23,14 @@ import kotlinx.coroutines.launch
 class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResultProvider {
 
     private val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
-    private val cardPresenter = CardPresenter()
+    private val cardPresenter = CardPresenter(
+        isFavorite = { channel -> ChannelFavorites.isFavorite(channel, favoriteKeys) }
+    )
     private val handler = Handler(Looper.getMainLooper())
     private var searchTask: Runnable? = null
     private var allChannels: List<Movie> = emptyList()
+    private var channelGroups: Map<String, List<Movie>> = emptyMap()
+    private var favoriteKeys: Set<String> = emptySet()
     private var activeQuery = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,8 +41,18 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         observeChannels()
         ChannelRepository.ensureLoaded(requireContext())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val updatedFavorites = ChannelFavorites.favoriteKeys(requireContext())
+        if (updatedFavorites != favoriteKeys) {
+            favoriteKeys = updatedFavorites
+            if (activeQuery.isBlank()) renderRecommendations()
+        }
     }
 
     override fun onDestroyView() {
@@ -51,8 +65,13 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 ChannelRepository.state.collect { state ->
-                    allChannels = state.groups.values.flatten()
-                    if (activeQuery.isNotBlank()) renderQuery(activeQuery)
+                    channelGroups = state.groups
+                    allChannels = channelGroups.values.flatten()
+                    if (activeQuery.isBlank()) {
+                        renderRecommendations()
+                    } else {
+                        renderQuery(activeQuery)
+                    }
                 }
             }
         }
@@ -66,7 +85,7 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
         searchTask = null
 
         if (newQuery.isBlank()) {
-            rowsAdapter.clear()
+            renderRecommendations()
         } else {
             searchTask = Runnable { renderQuery(newQuery) }
             handler.postDelayed(searchTask!!, SEARCH_DELAY_MS)
@@ -78,8 +97,39 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
         activeQuery = query
         searchTask?.let(handler::removeCallbacks)
         searchTask = null
-        renderQuery(query)
+        if (query.isBlank()) {
+            renderRecommendations()
+        } else {
+            renderQuery(query)
+        }
         return true
+    }
+
+    private fun renderRecommendations() {
+        rowsAdapter.clear()
+        val recommendations = TvSearchRecommendationPolicy.select(channelGroups, favoriteKeys)
+
+        if (recommendations.favorites.isNotEmpty()) {
+            val favoritesAdapter = ArrayObjectAdapter(cardPresenter)
+            recommendations.favorites.forEach(favoritesAdapter::add)
+            rowsAdapter.add(
+                ListRow(
+                    HeaderItem(rowsAdapter.size().toLong(), getString(R.string.favorite_channels)),
+                    favoritesAdapter
+                )
+            )
+        }
+
+        if (recommendations.commonChannels.isNotEmpty()) {
+            val commonAdapter = ArrayObjectAdapter(cardPresenter)
+            recommendations.commonChannels.forEach(commonAdapter::add)
+            rowsAdapter.add(
+                ListRow(
+                    HeaderItem(rowsAdapter.size().toLong(), getString(R.string.common_channels)),
+                    commonAdapter
+                )
+            )
+        }
     }
 
     private fun renderQuery(query: String) {

@@ -20,6 +20,7 @@
     <!-- Search -->
     <string name="search_hint">搜索频道...</string>
     <string name="no_results">未找到相关频道</string>
+    <string name="common_channels">常用频道</string>
     <string name="all_channels">全部频道 (%d)</string>
     <string name="search_results">搜索结果 (%d)</string>
     <string name="channel_loading">正在加载频道…</string>
