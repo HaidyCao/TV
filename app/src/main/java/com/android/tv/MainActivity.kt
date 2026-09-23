@@ -1,7 +1,10 @@
 package com.android.tv
 
+import android.annotation.SuppressLint
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.View
+import android.widget.Button
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -15,12 +18,23 @@ import androidx.fragment.app.FragmentActivity
 class MainActivity : FragmentActivity() {
 
     private lateinit var channelStatusBar: TextView
+    private lateinit var settingsButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
         channelStatusBar = findViewById(R.id.channel_status_bar)
+        settingsButton = findViewById(R.id.tv_settings_button)
+        settingsButton.setOnClickListener { mainFragment()?.openSettingsFromToolbar() }
+        settingsButton.setOnKeyListener { _, keyCode, event ->
+            if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_DOWN -> mainFragment()?.focusFirstBrowseChannel() == true
+                KeyEvent.KEYCODE_DPAD_LEFT -> searchOrb()?.requestFocus() == true
+                else -> false
+            }
+        }
         if (savedInstanceState == null) {
             getSupportFragmentManager().beginTransaction()
                 .replace(R.id.main_browse_fragment, MainFragment())
@@ -50,9 +64,22 @@ class MainActivity : FragmentActivity() {
         channelStatusBar.visibility = View.VISIBLE
     }
 
+    private fun mainFragment(): MainFragment? =
+        supportFragmentManager.findFragmentById(R.id.main_browse_fragment) as? MainFragment
+
+    @SuppressLint("MissingInflatedId") // Leanback creates the search orb inside its fragment view.
+    private fun searchOrb(): View? = window.decorView.findViewById(androidx.leanback.R.id.title_orb)
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus) {
+            hideSystemBars()
+            searchOrb()?.setOnKeyListener { _, keyCode, event ->
+                keyCode == KeyEvent.KEYCODE_DPAD_RIGHT &&
+                    event.action == KeyEvent.ACTION_DOWN &&
+                    settingsButton.requestFocus()
+            }
+        }
     }
 
     private fun hideSystemBars() {

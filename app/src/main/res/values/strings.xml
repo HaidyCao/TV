@@ -36,8 +36,28 @@
 
     <!-- Source settings -->
     <string name="settings_source_title">设置直播源地址</string>
-    <string name="settings_source_card_title">直播源设置</string>
-    <string name="settings_preview_card_title">频道预览</string>
+    <string name="settings_source_card_title">节目源</string>
+    <string name="settings_preview_card_title">预览与流量</string>
+    <string name="settings_data_card_title">数据与缓存</string>
+    <string name="settings_about_card_title">关于</string>
+    <string name="settings_source_current_label">当前节目源</string>
+    <string name="settings_source_edit_label">待保存的节目源地址（选择后编辑）</string>
+    <string name="settings_source_current_host">域名：%1$s</string>
+    <string name="settings_source_loading">正在加载当前节目源</string>
+    <string name="settings_source_refreshing">正在刷新节目源</string>
+    <string name="settings_source_online">节目单已从网络加载</string>
+    <string name="settings_source_cached">正在使用离线缓存</string>
+    <string name="settings_source_empty">刷新完成，但没有可播放频道</string>
+    <string name="settings_source_empty_cached">缓存中没有可播放频道</string>
+    <string name="settings_source_error">加载失败，请检查网络或节目源</string>
+    <string name="settings_source_error_with_channels">刷新失败，继续浏览已有频道</string>
+    <string name="settings_source_channel_stats">可用频道：%1$d 个 · 最近成功：%2$s</string>
+    <string name="settings_source_no_channel_stats">暂无可用频道数据</string>
+    <string name="settings_refresh_source">刷新节目源</string>
+    <string name="settings_time_unknown">暂无</string>
+    <string name="settings_version_unknown">未知</string>
+    <string name="settings_about_summary_placeholder">电视版 · 方向键移动，确认键选择，返回键回到首页</string>
+    <string name="settings_about_summary">电视版 %1$s\n方向键移动，确认键选择，返回键回到首页或上一级</string>
     <string name="source_url_dialog_title">编辑直播源地址</string>
     <string name="source_url_dialog_done">完成</string>
     <string name="source_url_dialog_cancel">取消</string>

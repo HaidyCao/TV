@@ -1,18 +1,14 @@
 package com.android.tv
 
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
-import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.ViewTreeObserver
-import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
@@ -246,14 +242,6 @@ class MainFragment : BrowseSupportFragment() {
             rowsAdapter.add(ListRow(HeaderItem(rowsAdapter.size().toLong(), category), listRowAdapter))
         }
 
-        val settingsAdapter = ArrayObjectAdapter(GridItemPresenter())
-        settingsAdapter.add(getString(R.string.personal_settings))
-        rowsAdapter.add(
-            ListRow(
-                HeaderItem(rowsAdapter.size().toLong(), getString(R.string.settings_header)),
-                settingsAdapter
-            )
-        )
         adapter = rowsAdapter
         rowsInitialized = true
         requestInitialFocusIfNeeded()
@@ -364,6 +352,64 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
+    fun openSettingsFromToolbar() {
+        val fallback = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys)?.let { target ->
+            val favoriteChannels = FavoriteChannelResolver.resolve(
+                latestGroups.values.flatten(),
+                favoriteKeys
+            )
+            if (favoriteChannels.isNotEmpty() && target.rowIndex == 0) {
+                favoriteChannels.getOrNull(target.itemIndex)
+            } else {
+                latestGroups.values.elementAtOrNull(target.rowIndex)?.getOrNull(target.itemIndex)
+            }
+        }
+        if (savedFocusPosition == null && fallback != null) {
+            val captured = TvFocusRestorePolicy.capture(latestGroups, fallback, null)
+            val favorites = FavoriteChannelResolver.resolve(
+                latestGroups.values.flatten(),
+                favoriteKeys
+            )
+            savedFocusPosition = if (favorites.isNotEmpty() && fallback == favorites.first()) {
+                captured?.copy(
+                    groupName = null,
+                    rowKind = TvFocusRowKind.FAVORITES
+                )
+            } else {
+                captured
+            }
+        }
+        pendingResumeFocusRestore = savedFocusPosition
+        visibleLivePreviewController?.pause()
+        tvChannelPreviewController?.stop()
+        startActivity(Intent(requireActivity(), SettingsActivity::class.java))
+    }
+
+    fun focusFirstBrowseChannel(): Boolean {
+        val target = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) ?: return false
+        val rootView = view ?: return false
+        if (!rowsInitialized) return false
+        rootView.post {
+            if (!isAdded || view !== rootView) return@post
+            setSelectedPosition(
+                target.rowIndex,
+                false,
+                object : Presenter.ViewHolderTask() {
+                    override fun run(viewHolder: Presenter.ViewHolder) {
+                        val rowViewHolder = viewHolder as? ListRowPresenter.ViewHolder ?: return
+                        rowViewHolder.gridView.setSelectedPosition(
+                            target.itemIndex,
+                            ViewHolderTask { selectedViewHolder ->
+                                selectedViewHolder.itemView.requestFocus()
+                            }
+                        )
+                    }
+                }
+            )
+        }
+        return true
+    }
+
     private fun onCardUnbound(holder: CardPresenter.CardViewHolder) {
         visibleLivePreviewController?.cancel(holder)
         if (focusedPreviewHolder === holder) {
@@ -419,9 +465,6 @@ class MainFragment : BrowseSupportFragment() {
             visibleLivePreviewController?.pause()
             when (item) {
                 is Movie -> openMovie(item, itemViewHolder)
-                is String -> if (item == getString(R.string.personal_settings)) {
-                    startActivity(Intent(requireActivity(), SettingsActivity::class.java))
-                }
             }
         }
     }
@@ -525,26 +568,6 @@ class MainFragment : BrowseSupportFragment() {
             })
     }
 
-    private inner class GridItemPresenter : Presenter() {
-        override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {
-            val view = TextView(parent.context).apply {
-                layoutParams = ViewGroup.LayoutParams(GRID_ITEM_WIDTH, GRID_ITEM_HEIGHT)
-                isFocusable = true
-                isFocusableInTouchMode = true
-                setBackgroundColor(ContextCompat.getColor(context, R.color.default_background))
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-            }
-            return Presenter.ViewHolder(view)
-        }
-
-        override fun onBindViewHolder(viewHolder: Presenter.ViewHolder, item: Any?) {
-            (viewHolder.view as TextView).text = item as? String
-        }
-
-        override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) = Unit
-    }
-
     private class TvListRowPresenter(
         private val cardMetrics: TvCardMetrics
     ) : ListRowPresenter() {
@@ -558,7 +581,5 @@ class MainFragment : BrowseSupportFragment() {
 
     companion object {
         private const val BACKGROUND_UPDATE_DELAY_MS = 300L
-        private const val GRID_ITEM_WIDTH = 320
-        private const val GRID_ITEM_HEIGHT = 120
     }
 }
