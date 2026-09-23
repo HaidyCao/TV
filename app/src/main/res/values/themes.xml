@@ -15,4 +15,14 @@
     <style name="Theme.TV.Phone.Dark" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+
+    <style name="Theme.TV.SettingsDialog" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:colorBackground">@color/card_info_background</item>
+        <item name="android:windowBackground">@drawable/tv_settings_dialog_background</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+        <item name="android:textColorSecondary">#C8FFFFFF</item>
+        <item name="android:colorAccent">@color/focus_accent</item>
+        <item name="colorAccent">@color/focus_accent</item>
+        <item name="colorControlActivated">@color/focus_accent</item>
+    </style>
 </resources>

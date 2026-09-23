@@ -31,6 +31,11 @@
 
     <!-- Source settings -->
     <string name="settings_source_title">设置直播源地址</string>
+    <string name="settings_source_card_title">直播源设置</string>
+    <string name="settings_preview_card_title">频道预览</string>
+    <string name="source_url_dialog_title">编辑直播源地址</string>
+    <string name="source_url_dialog_done">完成</string>
+    <string name="source_url_dialog_cancel">取消</string>
     <string name="source_url_hint">输入 .m3u 或 .txt 链接</string>
     <string name="save_and_refresh">保存并刷新</string>
     <string name="source_format_hint">多个视频地址格式建议：\n1. TXT：频道名,URL\n2. M3U：#EXTM3U 标准格式</string>
@@ -45,6 +50,9 @@
     <string name="source_test_failed">检测失败：节目源不可用，请检查地址或网络</string>
     <string name="channel_preview_title">频道卡片静音预览</string>
     <string name="channel_preview_description">最多预览一路直播，会消耗流量</string>
+    <string name="channel_preview_accessibility_state">%1$s，%2$s</string>
+    <string name="channel_preview_enabled_state">已开启</string>
+    <string name="channel_preview_disabled_state">已关闭</string>
     <string name="playback_error">播放失败，请检查网络或切换频道后重试</string>
     <string name="playback_connecting">正在连接直播源…</string>
     <string name="playback_buffering">正在缓冲…</string>
