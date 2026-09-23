@@ -17,6 +17,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.view.ContextThemeWrapper
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -101,6 +102,7 @@ class SettingsActivity : AppCompatActivity() {
             sourceChannelStats = findViewById(R.id.source_channel_stats)
             sourceRefreshButton = findViewById(R.id.btn_refresh_source)
             settingsAboutText = findViewById(R.id.settings_about_text)
+            val clearRecentWatchesButton: Button = findViewById(R.id.btn_clear_recent_watches)
             listOf(
                 sourceUrlFocusContainer,
                 sourceRuntimeStatus,
@@ -112,6 +114,7 @@ class SettingsActivity : AppCompatActivity() {
                 previewModeFocusedButton,
                 previewModeFullButton,
                 findViewById(R.id.source_cache_status),
+                clearRecentWatchesButton,
                 settingsAboutText
             ).forEach { focusTarget: View ->
                 focusTarget.setOnFocusChangeListener { focused, hasFocus ->
@@ -126,6 +129,27 @@ class SettingsActivity : AppCompatActivity() {
                 sourceRefreshInProgress = true
                 sourceRuntimeStatus.text = getString(R.string.settings_source_refreshing)
                 ChannelRepository.refresh(applicationContext, force = true)
+            }
+            clearRecentWatchesButton.setOnClickListener {
+                val storedCount = RecentWatchRepository.records(this).size
+                if (storedCount == 0) {
+                    Toast.makeText(this, R.string.settings_clear_recent_empty, Toast.LENGTH_SHORT).show()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.settings_clear_recent_title)
+                        .setMessage(getString(R.string.settings_clear_recent_message, storedCount))
+                        .setNegativeButton(R.string.source_url_dialog_cancel, null)
+                        .setPositiveButton(R.string.settings_clear_recent_confirm) { _, _ ->
+                            val cleared = RecentWatchRepository.clear(this)
+                            Toast.makeText(
+                                this,
+                                if (cleared) R.string.settings_clear_recent_done
+                                else R.string.settings_clear_recent_failed,
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        .show()
+                }
             }
             sourceUrlFocusContainer.setOnClickListener { showSourceUrlDialog() }
             sourceUrlFocusContainer.setOnKeyListener { view, keyCode, event ->

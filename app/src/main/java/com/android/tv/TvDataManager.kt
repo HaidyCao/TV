@@ -97,6 +97,15 @@ object TvDataManager {
     /** Captured when a repository refresh is requested to reject jobs delayed across a switch. */
     internal fun currentSourceGeneration(): Long = synchronized(sourceStateLock) { sourceGeneration }
 
+    /** Runs a small persistence action only while [sourceUrl] is still the selected source. */
+    internal fun writeIfCurrentSource(
+        context: Context,
+        sourceUrl: String,
+        write: () -> Boolean
+    ): Boolean = synchronized(sourceStateLock) {
+        if (getSourceUrl(context.applicationContext) != sourceUrl) false else write()
+    }
+
     fun isValidSourceUrl(sourceUrl: String): Boolean {
         val uri = runCatching { Uri.parse(sourceUrl.trim()) }.getOrNull() ?: return false
         return uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()
@@ -552,7 +561,8 @@ object TvDataManager {
                             description = "正在播放: $name",
                             cardImageUrl = null,
                             backgroundImageUrl = null,
-                            category = currentGroup
+                            category = currentGroup,
+                            playlistIdentity = identity
                         )
                     )
                 }
@@ -607,7 +617,8 @@ object TvDataManager {
                             description = "正在播放: $currentName",
                             cardImageUrl = currentLogo,
                             backgroundImageUrl = null,
-                            category = currentGroup
+                            category = currentGroup,
+                            playlistIdentity = identity
                         )
                     )
                     // 重置，因为我们已经处理完一个频道

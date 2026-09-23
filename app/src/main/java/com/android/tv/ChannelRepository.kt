@@ -58,6 +58,15 @@ object ChannelRepository {
 
     val state: StateFlow<ChannelState> = mutableState.asStateFlow()
 
+    /** Source that owns the groups currently exposed through [state]. */
+    internal fun groupsSourceUrl(): String? = when (val current = mutableState.value) {
+        is ChannelState.Content -> current.sourceUrl
+        is ChannelState.Loading,
+        is ChannelState.Error -> loadedSourceUrl
+        is ChannelState.Empty,
+        ChannelState.Idle -> null
+    }
+
     private var refreshJob: Job? = null
     @Volatile
     private var loadedSourceUrl: String? = null

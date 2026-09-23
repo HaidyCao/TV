@@ -164,6 +164,76 @@ class TvFocusRestorePolicyTest {
         assertEquals(TvInitialFocusTarget(rowIndex = 0, itemIndex = 0), target)
     }
 
+    @Test
+    fun later_group_restore_accounts_for_favorites_and_recent_rows() {
+        val selected = liveChannel(3)
+        val first = liveChannel(1)
+        val second = liveChannel(2)
+        val groups = linkedMapOf("央视频道" to listOf(first), "卫视频道" to listOf(second, selected))
+        val recent = listOf(liveChannel(4))
+
+        val withoutOptionalRows = TvFocusRestorePolicy.choose(
+            groups, emptySet(), savedPosition(selected, "卫视频道", TvFocusRowKind.ORIGINAL_GROUP)
+        )
+        val withRecent = TvFocusRestorePolicy.choose(
+            groups, emptySet(), savedPosition(selected, "卫视频道", TvFocusRowKind.ORIGINAL_GROUP), recent
+        )
+        val withFavoritesAndRecent = TvFocusRestorePolicy.choose(
+            groups,
+            setOf(requireNotNull(ChannelFavorites.favoriteKeyFor(first))),
+            savedPosition(selected, "卫视频道", TvFocusRowKind.ORIGINAL_GROUP),
+            recent
+        )
+
+        assertEquals(TvInitialFocusTarget(rowIndex = 1, itemIndex = 1), withoutOptionalRows)
+        assertEquals(TvInitialFocusTarget(rowIndex = 2, itemIndex = 1), withRecent)
+        assertEquals(TvInitialFocusTarget(rowIndex = 3, itemIndex = 1), withFavoritesAndRecent)
+    }
+
+    @Test
+    fun recent_row_focus_restores_to_the_recent_row_when_it_exists() {
+        val selected = liveChannel(2)
+        val groups = linkedMapOf("央视频道" to listOf(liveChannel(1)), "体育" to listOf(selected))
+        val target = TvFocusRestorePolicy.choose(
+            groups = groups,
+            favoriteKeys = setOf(requireNotNull(ChannelFavorites.favoriteKeyFor(liveChannel(1)))),
+            savedPosition = savedPosition(selected, null, TvFocusRowKind.RECENT),
+            recentChannels = listOf(liveChannel(3), selected)
+        )
+
+        assertEquals(TvInitialFocusTarget(rowIndex = 2, itemIndex = 1), target)
+    }
+
+    @Test
+    fun recent_focus_keeps_original_group_as_fallback_after_recent_row_is_removed() {
+        val selected = liveChannel(2)
+        val groups = linkedMapOf("央视频道" to listOf(liveChannel(1)), "体育" to listOf(selected))
+        val saved = TvFocusRestorePolicy.capture(
+            groups, selected, previous = null, rowKind = TvFocusRowKind.RECENT
+        )
+
+        assertEquals("体育", saved?.groupName)
+        assertEquals(TvInitialFocusTarget(rowIndex = 1, itemIndex = 0), TvFocusRestorePolicy.choose(
+            groups = groups,
+            favoriteKeys = emptySet(),
+            savedPosition = saved,
+            recentChannels = emptyList()
+        ))
+    }
+
+    @Test
+    fun initial_focus_offsets_later_groups_only_when_recent_row_is_present() {
+        val groups = linkedMapOf(
+            "空组" to emptyList(),
+            "体育" to listOf(liveChannel(2))
+        )
+
+        assertEquals(TvInitialFocusTarget(1, 0), TvInitialFocusPolicy.choose(groups, emptySet()))
+        assertEquals(TvInitialFocusTarget(2, 0), TvInitialFocusPolicy.choose(
+            groups, emptySet(), hasRecentRow = true
+        ))
+    }
+
     private fun savedPosition(
         movie: Movie,
         groupName: String?,

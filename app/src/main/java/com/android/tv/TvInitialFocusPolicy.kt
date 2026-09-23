@@ -11,7 +11,8 @@ internal object TvInitialFocusPolicy {
 
     fun choose(
         groups: Map<String, List<Movie>>,
-        favoriteKeys: Set<String>
+        favoriteKeys: Set<String>,
+        hasRecentRow: Boolean = false
     ): TvInitialFocusTarget? {
         val channels = groups.values.flatten()
         val favorites = FavoriteChannelResolver.resolve(channels, favoriteKeys)
@@ -25,7 +26,11 @@ internal object TvInitialFocusPolicy {
         if (firstPlayableGroupIndex < 0) return null
 
         return TvInitialFocusTarget(
-            rowIndex = firstPlayableGroupIndex,
+            rowIndex = TvHomeRowLayoutPolicy.originalGroupRowIndex(
+                originalGroupIndex = firstPlayableGroupIndex,
+                hasFavorites = false,
+                hasRecentRow = hasRecentRow
+            ),
             itemIndex = groups.values.elementAt(firstPlayableGroupIndex).indexOfFirst(::isPlayableLive)
         )
     }

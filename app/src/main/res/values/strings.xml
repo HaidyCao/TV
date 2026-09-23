@@ -21,6 +21,7 @@
     <string name="search_hint">搜索频道...</string>
     <string name="no_results">未找到相关频道</string>
     <string name="common_channels">常用频道</string>
+    <string name="recent_channels">最近观看</string>
     <string name="all_channels">全部频道 (%d)</string>
     <string name="search_results">搜索结果 (%d)</string>
     <string name="channel_loading">正在加载频道…</string>
@@ -39,6 +40,13 @@
     <string name="settings_source_card_title">节目源</string>
     <string name="settings_preview_card_title">预览与流量</string>
     <string name="settings_data_card_title">数据与缓存</string>
+    <string name="settings_clear_recent_watches">清除最近观看记录</string>
+    <string name="settings_clear_recent_title">清除最近观看记录？</string>
+    <string name="settings_clear_recent_message">将删除 %1$d 条最近观看记录。</string>
+    <string name="settings_clear_recent_confirm">清除记录</string>
+    <string name="settings_clear_recent_empty">没有最近观看记录</string>
+    <string name="settings_clear_recent_done">最近观看记录已清除</string>
+    <string name="settings_clear_recent_failed">无法清除最近观看记录</string>
     <string name="settings_about_card_title">关于</string>
     <string name="settings_source_current_label">当前节目源</string>
     <string name="settings_source_edit_label">待保存的节目源地址（选择后编辑）</string>

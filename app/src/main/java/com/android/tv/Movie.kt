@@ -13,7 +13,9 @@ data class Movie(
     var cardImageUrl: String? = null,
     var videoUrl: String? = null,
     var studio: String? = null,
-    var category: String? = null
+    var category: String? = null,
+    /** Normalized playlist identity before the duplicate occurrence suffix is applied. */
+    var playlistIdentity: String? = null
 ) : Serializable {
 
     val isLive: Boolean

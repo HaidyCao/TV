@@ -30,7 +30,10 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
     private var searchTask: Runnable? = null
     private var allChannels: List<Movie> = emptyList()
     private var channelGroups: Map<String, List<Movie>> = emptyMap()
+    private var channelGroupsSourceUrl: String? = null
     private var favoriteKeys: Set<String> = emptySet()
+    private var recentChannels: List<Movie> = emptyList()
+    private var recentSignature: List<Triple<String, Long, Long>> = emptyList()
     private var activeQuery = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,10 +51,13 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
 
     override fun onResume() {
         super.onResume()
+        val recentChanged = refreshRecentChannels()
         val updatedFavorites = ChannelFavorites.favoriteKeys(requireContext())
         if (updatedFavorites != favoriteKeys) {
             favoriteKeys = updatedFavorites
             if (activeQuery.isBlank()) renderRecommendations()
+        } else if (recentChanged && activeQuery.isBlank()) {
+            renderRecommendations()
         }
     }
 
@@ -66,7 +72,15 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 ChannelRepository.state.collect { state ->
                     channelGroups = state.groups
+                    channelGroupsSourceUrl = when (state) {
+                        is ChannelState.Content -> state.sourceUrl
+                        is ChannelState.Loading,
+                        is ChannelState.Error -> ChannelRepository.groupsSourceUrl()
+                        is ChannelState.Empty -> state.sourceUrl
+                        ChannelState.Idle -> null
+                    }
                     allChannels = channelGroups.values.flatten()
+                    refreshRecentChannels()
                     if (activeQuery.isBlank()) {
                         renderRecommendations()
                     } else {
@@ -107,7 +121,22 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
 
     private fun renderRecommendations() {
         rowsAdapter.clear()
-        val recommendations = TvSearchRecommendationPolicy.select(channelGroups, favoriteKeys)
+        val recommendations = TvSearchRecommendationPolicy.select(
+            channelGroups,
+            favoriteKeys,
+            recentChannels
+        )
+
+        if (recommendations.recent.isNotEmpty()) {
+            val recentAdapter = ArrayObjectAdapter(cardPresenter)
+            recommendations.recent.forEach(recentAdapter::add)
+            rowsAdapter.add(
+                ListRow(
+                    HeaderItem(rowsAdapter.size().toLong(), getString(R.string.recent_channels)),
+                    recentAdapter
+                )
+            )
+        }
 
         if (recommendations.favorites.isNotEmpty()) {
             val favoritesAdapter = ArrayObjectAdapter(cardPresenter)
@@ -130,6 +159,22 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
                 )
             )
         }
+    }
+
+    private fun refreshRecentChannels(): Boolean {
+        val resolved = RecentWatchRepository.resolve(
+            context = requireContext(),
+            sourceUrl = TvDataManager.getSourceUrl(requireContext()),
+            groupsSourceUrl = channelGroupsSourceUrl,
+            groups = channelGroups
+        )
+        val nextSignature = resolved.map { recent ->
+            Triple(recent.record.sourceUrl, recent.record.channelId, recent.record.watchedAtMillis)
+        }
+        val changed = nextSignature != recentSignature
+        recentSignature = nextSignature
+        recentChannels = resolved.map(ResolvedRecentWatch::channel)
+        return changed
     }
 
     private fun renderQuery(query: String) {

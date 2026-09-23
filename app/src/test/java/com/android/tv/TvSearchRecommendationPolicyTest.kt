@@ -49,8 +49,25 @@ class TvSearchRecommendationPolicyTest {
         )
 
         assertEquals(emptyList<Movie>(), recommendations.favorites)
+        assertEquals(emptyList<Movie>(), recommendations.recent)
         assertEquals(null, recommendations.commonGroupName)
         assertEquals(emptyList<Movie>(), recommendations.commonChannels)
+    }
+
+    @Test
+    fun empty_search_orders_recent_before_favorites_and_excludes_both_from_common_group() {
+        val recent = liveChannel(1)
+        val favorite = liveChannel(2)
+        val common = liveChannel(3)
+        val recommendations = TvSearchRecommendationPolicy.select(
+            groups = linkedMapOf("新闻" to listOf(recent, favorite, common)),
+            favoriteKeys = setOf(requireNotNull(ChannelFavorites.favoriteKeyFor(favorite))),
+            recentChannels = listOf(recent)
+        )
+
+        assertEquals(listOf(recent), recommendations.recent)
+        assertEquals(listOf(favorite), recommendations.favorites)
+        assertEquals(listOf(common), recommendations.commonChannels)
     }
 
     private fun liveChannel(id: Long): Movie {

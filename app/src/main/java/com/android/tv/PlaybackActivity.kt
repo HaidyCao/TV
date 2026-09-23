@@ -25,8 +25,18 @@ import androidx.media3.ui.PlayerView
 
 class PlaybackActivity : AppCompatActivity() {
 
+    private data class PlaybackRequest(
+        val generation: Long,
+        val channelId: Long,
+        val sourceUrl: String,
+        val videoUrl: String
+    )
+
     private var player: ExoPlayer? = null
     private var currentChannel: Movie? = null
+    private var playbackRequestGeneration = 0L
+    private var activePlaybackRequest: PlaybackRequest? = null
+    private var recordedPlaybackRequestGeneration: Long? = null
     private var playbackUiState = PlaybackUiState.CONNECTING
     private var channelOverlayState = PlaybackChannelOverlayPolicy.hidden()
     private val overlayHandler = Handler(Looper.getMainLooper())
@@ -81,13 +91,13 @@ class PlaybackActivity : AppCompatActivity() {
             createdPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (playbackUiState != PlaybackUiState.ERROR) {
-                        updatePlaybackState(state, createdPlayer.isPlaying)
+                        updatePlaybackState(state, createdPlayer.isPlaying, createdPlayer)
                     }
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     if (playbackUiState != PlaybackUiState.ERROR) {
-                        updatePlaybackState(createdPlayer.playbackState, isPlaying)
+                        updatePlaybackState(createdPlayer.playbackState, isPlaying, createdPlayer)
                     }
                 }
 
@@ -193,6 +203,14 @@ class PlaybackActivity : AppCompatActivity() {
             return
         }
         currentChannel = channel
+        playbackRequestGeneration += 1L
+        activePlaybackRequest = PlaybackRequest(
+            generation = playbackRequestGeneration,
+            channelId = channel.id,
+            sourceUrl = TvDataManager.getSourceUrl(this),
+            videoUrl = videoUrl.toUri().toString()
+        )
+        recordedPlaybackRequestGeneration = null
         playbackUiState = PlaybackUiState.CONNECTING
         renderPlaybackState()
         player?.apply {
@@ -204,9 +222,42 @@ class PlaybackActivity : AppCompatActivity() {
         if (showOverlay) showChannelOverlay(channel)
     }
 
-    private fun updatePlaybackState(playerState: Int, isPlaying: Boolean) {
+    private fun updatePlaybackState(playerState: Int, isPlaying: Boolean, callbackPlayer: ExoPlayer) {
         playbackUiState = PlaybackStateMapper.fromPlayerState(playerState, isPlaying)
         renderPlaybackState()
+        recordRecentPlaybackIfEligible(callbackPlayer, isPlaying)
+    }
+
+    private fun recordRecentPlaybackIfEligible(callbackPlayer: ExoPlayer, isPlaying: Boolean) {
+        val request = activePlaybackRequest ?: return
+        val channel = currentChannel ?: return
+        val repositoryState = ChannelRepository.state.value
+        val sourceStillCurrent = request.sourceUrl == TvDataManager.getSourceUrl(this) &&
+            ChannelRepository.groupsSourceUrl() == request.sourceUrl
+        val channelStillCurrent = channel.id == request.channelId &&
+            channel.videoUrl?.toUri()?.toString() == request.videoUrl &&
+            callbackPlayer.currentMediaItem?.localConfiguration?.uri?.toString() == request.videoUrl
+        val requestStillCurrent = callbackPlayer === player &&
+            activePlaybackRequest === request &&
+            request.generation == playbackRequestGeneration
+        if (!RecentWatchPolicy.shouldRecord(
+                playbackState = playbackUiState,
+                playerIsPlaying = isPlaying,
+                requestStillCurrent = requestStillCurrent,
+                channelStillCurrent = channelStillCurrent,
+                playlistSourceStillCurrent = sourceStillCurrent
+            )
+        ) return
+        if (recordedPlaybackRequestGeneration == request.generation) return
+
+        val stored = RecentWatchRepository.recordPlayingChannel(
+            context = this,
+            sourceUrl = request.sourceUrl,
+            groupsSourceUrl = ChannelRepository.groupsSourceUrl(),
+            groups = repositoryState.groups,
+            playingChannel = channel
+        )
+        if (stored) recordedPlaybackRequestGeneration = request.generation
     }
 
     private fun showPlaybackError(message: String, canRetry: Boolean) {

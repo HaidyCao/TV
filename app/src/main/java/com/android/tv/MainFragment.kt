@@ -52,6 +52,9 @@ class MainFragment : BrowseSupportFragment() {
     private var appliedPreviewMode = TvChannelPreviewMode.FOCUSED_AND_VISIBLE
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
+    private var latestGroupsSourceUrl: String? = null
+    private var latestRecentChannels: List<Movie> = emptyList()
+    private var recentSignature: List<Triple<String, Long, Long>> = emptyList()
     private var rowsInitialized = false
     private var savedFocusPosition: TvSavedFocusPosition? = null
     private var pendingFocusRestore: TvSavedFocusPosition? = null
@@ -135,6 +138,9 @@ class MainFragment : BrowseSupportFragment() {
         if (updatedFavorites != favoriteKeys) {
             favoriteKeys = updatedFavorites
             renderRows(latestGroups, force = true)
+        } else {
+            // Playback and Settings may update history while this screen is stopped.
+            renderRows(latestGroups)
         }
         requestSavedFocusRestore()
     }
@@ -187,7 +193,14 @@ class MainFragment : BrowseSupportFragment() {
                 ChannelRepository.state.collect { state ->
                     val status = TvChannelStatusPolicy.presentation(state)
                     (activity as? MainActivity)?.showChannelStatus(status)
-                    renderRows(state.groups)
+                    val groupsSourceUrl = when (state) {
+                        is ChannelState.Content -> state.sourceUrl
+                        is ChannelState.Loading,
+                        is ChannelState.Error -> ChannelRepository.groupsSourceUrl()
+                        is ChannelState.Empty -> state.sourceUrl
+                        ChannelState.Idle -> null
+                    }
+                    renderRows(state.groups, groupsSourceUrl = groupsSourceUrl)
                 }
             }
         }
@@ -195,20 +208,40 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun renderRows(
         tvGroups: Map<String, List<Movie>>,
-        force: Boolean = false
+        force: Boolean = false,
+        groupsSourceUrl: String? = latestGroupsSourceUrl
     ) {
         val previousGroups = latestGroups
         val previousFavoriteKeys = favoriteKeys
         val channels = tvGroups.values.flatten()
         favoriteKeys = ChannelFavorites.migrateLegacyKeys(requireContext(), channels)
+        val resolvedRecent = RecentWatchRepository.resolve(
+            context = requireContext(),
+            sourceUrl = TvDataManager.getSourceUrl(requireContext()),
+            groupsSourceUrl = groupsSourceUrl,
+            groups = tvGroups
+        )
+        val nextRecentSignature = resolvedRecent.map { recent ->
+            Triple(recent.record.sourceUrl, recent.record.channelId, recent.record.watchedAtMillis)
+        }
+        val recentChanged = nextRecentSignature != recentSignature
+        latestRecentChannels = resolvedRecent.map(ResolvedRecentWatch::channel)
         val groupsChanged = tvGroups != previousGroups
         latestGroups = tvGroups
+        latestGroupsSourceUrl = groupsSourceUrl
+        recentSignature = nextRecentSignature
         if (
             rowsInitialized &&
             !force &&
             !groupsChanged &&
-            favoriteKeys == previousFavoriteKeys
+            favoriteKeys == previousFavoriteKeys &&
+            !recentChanged
         ) return
+
+        if (rowsInitialized && recentChanged && pendingResumeFocusRestore != null) {
+            pendingFocusRestore = pendingResumeFocusRestore
+            initialFocusApplied = false
+        }
 
         focusRequestToken += 1L
         initialFocusPending = false
@@ -280,16 +313,26 @@ class MainFragment : BrowseSupportFragment() {
             favorites.forEach(favoritesAdapter::add)
             rowsAdapter.add(
                 ListRow(
-                    HeaderItem(rowsAdapter.size().toLong(), getString(R.string.favorite_channels)),
+                    HeaderItem(FAVORITES_ROW_ID, getString(R.string.favorite_channels)),
                     favoritesAdapter
                 )
             )
         }
 
-        tvGroups.forEach { (category, channels) ->
+        tvGroups.entries.forEachIndexed { groupIndex, (category, channels) ->
             val listRowAdapter = ArrayObjectAdapter(cardPresenter)
             channels.forEach(listRowAdapter::add)
             rowsAdapter.add(ListRow(HeaderItem(rowsAdapter.size().toLong(), category), listRowAdapter))
+            if (groupIndex == 0 && latestRecentChannels.isNotEmpty()) {
+                val recentAdapter = ArrayObjectAdapter(cardPresenter)
+                latestRecentChannels.forEach(recentAdapter::add)
+                rowsAdapter.add(
+                    ListRow(
+                        HeaderItem(RECENT_ROW_ID, getString(R.string.recent_channels)),
+                        recentAdapter
+                    )
+                )
+            }
         }
 
         adapter = rowsAdapter
@@ -309,9 +352,13 @@ class MainFragment : BrowseSupportFragment() {
         val restoredTarget = TvFocusRestorePolicy.choose(
             latestGroups,
             favoriteKeys,
-            restorePosition
+            restorePosition,
+            latestRecentChannels
         )
-        if (restoredTarget == null && TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) == null) {
+        if (restoredTarget == null && TvInitialFocusPolicy.choose(
+                latestGroups, favoriteKeys, latestRecentChannels.isNotEmpty()
+            ) == null
+        ) {
             return
         }
         initialFocusPending = true
@@ -329,10 +376,13 @@ class MainFragment : BrowseSupportFragment() {
             val currentRestoredTarget = TvFocusRestorePolicy.choose(
                 latestGroups,
                 favoriteKeys,
-                pendingFavoriteFocusRestore ?: pendingFocusRestore
+                pendingFavoriteFocusRestore ?: pendingFocusRestore,
+                latestRecentChannels
             )
             val currentTarget = currentRestoredTarget
-                ?: TvInitialFocusPolicy.choose(latestGroups, favoriteKeys)
+                ?: TvInitialFocusPolicy.choose(
+                    latestGroups, favoriteKeys, latestRecentChannels.isNotEmpty()
+                )
                 ?: return@post
             setSelectedPosition(
                 currentTarget.rowIndex,
@@ -360,7 +410,9 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun requestSavedFocusRestore() {
         val savedPosition = pendingResumeFocusRestore ?: return
-        val target = TvFocusRestorePolicy.choose(latestGroups, favoriteKeys, savedPosition)
+        val target = TvFocusRestorePolicy.choose(
+            latestGroups, favoriteKeys, savedPosition, latestRecentChannels
+        )
             ?: run {
                 pendingResumeFocusRestore = null
                 return
@@ -403,24 +455,16 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     fun openSettingsFromToolbar() {
-        val fallback = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys)?.let { target ->
-            val favoriteChannels = FavoriteChannelResolver.resolve(
-                latestGroups.values.flatten(),
-                favoriteKeys
-            )
-            if (favoriteChannels.isNotEmpty() && target.rowIndex == 0) {
-                favoriteChannels.getOrNull(target.itemIndex)
-            } else {
-                latestGroups.values.elementAtOrNull(target.rowIndex)?.getOrNull(target.itemIndex)
-            }
-        }
+        val favoriteChannels = FavoriteChannelResolver.resolve(
+            latestGroups.values.flatten(), favoriteKeys
+        )
+        val fallback = favoriteChannels.firstOrNull() ?: latestGroups.values
+            .asSequence()
+            .flatten()
+            .firstOrNull { it.isLive && !it.videoUrl.isNullOrBlank() }
         if (savedFocusPosition == null && fallback != null) {
             val captured = TvFocusRestorePolicy.capture(latestGroups, fallback, null)
-            val favorites = FavoriteChannelResolver.resolve(
-                latestGroups.values.flatten(),
-                favoriteKeys
-            )
-            savedFocusPosition = if (favorites.isNotEmpty() && fallback == favorites.first()) {
+            savedFocusPosition = if (favoriteChannels.isNotEmpty() && fallback == favoriteChannels.first()) {
                 captured?.copy(
                     groupName = null,
                     rowKind = TvFocusRowKind.FAVORITES
@@ -437,7 +481,9 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     fun focusFirstBrowseChannel(): Boolean {
-        val target = TvInitialFocusPolicy.choose(latestGroups, favoriteKeys) ?: return false
+        val target = TvInitialFocusPolicy.choose(
+            latestGroups, favoriteKeys, latestRecentChannels.isNotEmpty()
+        ) ?: return false
         val rootView = view ?: return false
         if (!rowsInitialized) return false
         rootView.post {
@@ -518,7 +564,10 @@ class MainFragment : BrowseSupportFragment() {
             visibleLivePreviewController?.setFocusPriorityPending(false)
             tvChannelPreviewController?.stop()
             when (item) {
-                is Movie -> openMovie(item, itemViewHolder)
+                is Movie -> {
+                    if (item.isLive) rememberFocusPosition(item, row)
+                    openMovie(item, itemViewHolder)
+                }
             }
         }
     }
@@ -532,6 +581,9 @@ class MainFragment : BrowseSupportFragment() {
             if (movie.isLive) PlaybackActivity::class.java else DetailsActivity::class.java
         ).putExtra(DetailsActivity.MOVIE, movie)
 
+        if (movie.isLive) {
+            pendingResumeFocusRestore = savedFocusPosition ?: pendingFocusRestore
+        }
         if (!movie.isLive) {
             val imageView = (itemViewHolder.view as? ImageCardView)?.mainImageView
             if (imageView != null) {
@@ -580,23 +632,16 @@ class MainFragment : BrowseSupportFragment() {
             pendingFocusRestore != null ||
             pendingFavoriteFocusRestore != null
         ) return
-        val channelKey = ChannelFavorites.favoriteKeyFor(movie) ?: return
-        val headerName = row.headerItem?.name ?: return
-        val isFavoritesRow = headerName == getString(R.string.favorite_channels)
-        val originalGroupName = latestGroups.entries.firstOrNull { (_, channels) ->
-            channels.any { channel ->
-                ChannelFavorites.favoriteKeyFor(channel) == channelKey
-            }
-        }?.key
-        val rowKind = if (isFavoritesRow) {
-            TvFocusRowKind.FAVORITES
-        } else {
-            TvFocusRowKind.ORIGINAL_GROUP
+        if (ChannelFavorites.favoriteKeyFor(movie) == null) return
+        val rowKind = when (row.headerItem?.id) {
+            FAVORITES_ROW_ID -> TvFocusRowKind.FAVORITES
+            RECENT_ROW_ID -> TvFocusRowKind.RECENT
+            else -> TvFocusRowKind.ORIGINAL_GROUP
         }
-        val groupName = originalGroupName ?: headerName.takeUnless { isFavoritesRow }
-        savedFocusPosition = TvSavedFocusPosition(
-            channelKey = channelKey,
-            groupName = groupName,
+        savedFocusPosition = TvFocusRestorePolicy.capture(
+            groups = latestGroups,
+            channel = movie,
+            previous = savedFocusPosition,
             rowKind = rowKind
         )
     }
@@ -638,5 +683,7 @@ class MainFragment : BrowseSupportFragment() {
 
     companion object {
         private const val BACKGROUND_UPDATE_DELAY_MS = 300L
+        private const val FAVORITES_ROW_ID = -100L
+        private const val RECENT_ROW_ID = -101L
     }
 }

@@ -178,7 +178,8 @@ class CardPresenter(
         val cardView = holder.cardView
         // Remove references to images so that the garbage collector can free up memory
         cardView.mainImageView?.let { imageView ->
-            Glide.with(cardView).clear(imageView)
+            // Leanback can recycle cards while the host Activity is already destroyed.
+            Glide.with(cardView.context.applicationContext).clear(imageView)
             imageView.tag = null
         }
         cardView.badgeImage = null

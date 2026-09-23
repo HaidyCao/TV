@@ -376,12 +376,29 @@
                 android:background="@drawable/tv_settings_url_row_background"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
-                android:nextFocusDown="@id/settings_about_text"
-                android:nextFocusForward="@id/settings_about_text"
+                android:nextFocusDown="@id/btn_clear_recent_watches"
+                android:nextFocusForward="@id/btn_clear_recent_watches"
                 android:nextFocusUp="@id/preview_mode_full"
                 android:padding="16dp"
                 android:text="@string/source_cache_empty"
                 android:textColor="#D0FFFFFF"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_clear_recent_watches"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/tv_settings_url_row_background"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:minHeight="68dp"
+                android:nextFocusUp="@id/source_cache_status"
+                android:nextFocusDown="@id/settings_about_text"
+                android:nextFocusForward="@id/settings_about_text"
+                android:padding="16dp"
+                android:text="@string/settings_clear_recent_watches"
+                android:textColor="#FFFFFF"
                 android:textSize="18sp" />
         </LinearLayout>
 
@@ -409,7 +426,7 @@
                 android:background="@drawable/tv_settings_url_row_background"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
-                android:nextFocusUp="@id/source_cache_status"
+                android:nextFocusUp="@id/btn_clear_recent_watches"
                 android:padding="16dp"
                 android:text="@string/settings_about_summary_placeholder"
                 android:textColor="#D0FFFFFF"
