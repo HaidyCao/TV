@@ -65,4 +65,88 @@
 
     <include layout="@layout/playback_status_overlay_tv" />
 
+    <LinearLayout
+        android:id="@+id/channel_directory_panel"
+        android:layout_width="620dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="28dp"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="24dp"
+        android:background="@drawable/playback_directory_panel_background"
+        android:elevation="24dp"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="14dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/channel_directory_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/playback_directory_title"
+            android:textColor="#FFFFFF"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/channel_directory_notice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:accessibilityLiveRegion="polite"
+            android:maxLines="2"
+            android:text="@string/playback_directory_help"
+            android:textColor="#C7D2DE"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="12dp"
+            android:layout_weight="1"
+            android:orientation="horizontal">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/channel_directory_categories"
+                android:layout_width="172dp"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:focusable="true"
+                android:nextFocusRight="@id/channel_directory_channels"
+                android:overScrollMode="never"
+                android:paddingEnd="8dp"
+                android:scrollbars="vertical" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:background="#40576776" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/channel_directory_channels"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:focusable="true"
+                android:nextFocusLeft="@id/channel_directory_categories"
+                android:overScrollMode="never"
+                android:paddingStart="8dp"
+                android:scrollbars="vertical" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/playback_directory_footer"
+            android:textColor="#AAB8C6"
+            android:textSize="12sp" />
+    </LinearLayout>
+
 </FrameLayout>
