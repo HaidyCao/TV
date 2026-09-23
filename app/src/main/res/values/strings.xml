@@ -50,6 +50,7 @@
     <string name="settings_about_card_title">关于</string>
     <string name="settings_source_current_label">当前节目源</string>
     <string name="settings_source_edit_label">待保存的节目源地址（选择后编辑）</string>
+    <string name="settings_source_edit_accessibility">%1$s：%2$s</string>
     <string name="settings_source_current_host">域名：%1$s</string>
     <string name="settings_source_loading">正在加载当前节目源</string>
     <string name="settings_source_refreshing">正在刷新节目源</string>
@@ -116,6 +117,7 @@
     <string name="playback_directory_footer">上下移动 · 左右切换分类与频道 · 确认切换 · 返回或 MENU 关闭</string>
     <string name="playback_directory_category_row">%1$s\n%2$d 个频道</string>
     <string name="playback_directory_category_accessibility">%1$s，%2$d 个频道</string>
+    <string name="playback_directory_category_current_accessibility">%1$s，%2$d 个频道，当前分类</string>
     <string name="playback_directory_current">当前播放</string>
     <string name="playback_directory_channel_current_accessibility">%1$s，当前播放</string>
     <string name="playback_directory_channel_accessibility">%1$s</string>
@@ -128,6 +130,7 @@
     <string name="favorite_empty">还没有收藏频道，长按频道卡片即可收藏</string>
     <string name="favorite_channels">收藏频道</string>
     <string name="favorite_badge_description">已收藏</string>
+    <string name="channel_card_favorite_accessibility">%1$s，已收藏</string>
 
     <!-- Phone browse -->
     <string name="phone_browse_title">电视直播</string>

@@ -122,6 +122,7 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
             sourceUrlDisplay.text = editSourceUrl.text
+            updateSourceUrlAccessibility()
             bindCurrentSource()
             bindAboutSummary()
             sourceRefreshButton.setOnClickListener {
@@ -218,7 +219,10 @@ class SettingsActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
 
             override fun afterTextChanged(s: Editable?) {
-                if (isTvUiMode) sourceUrlDisplay.text = s?.toString().orEmpty()
+                if (isTvUiMode) {
+                    sourceUrlDisplay.text = s?.toString().orEmpty()
+                    updateSourceUrlAccessibility()
+                }
                 sourceTestGeneration += 1L
                 sourceTestJob?.cancel()
                 sourceTestJob = null
@@ -550,6 +554,17 @@ class SettingsActivity : AppCompatActivity() {
         val host = Uri.parse(sourceUrl).host.orEmpty().ifBlank { sourceUrl }
         sourceCurrentHost.text = getString(R.string.settings_source_current_host, host)
         sourceCurrentUrl.text = sourceUrl
+    }
+
+    private fun updateSourceUrlAccessibility() {
+        val candidate = sourceUrlDisplay.text?.toString().orEmpty().ifBlank {
+            getString(R.string.source_url_hint)
+        }
+        sourceUrlFocusContainer.contentDescription = getString(
+            R.string.settings_source_edit_accessibility,
+            getString(R.string.settings_source_edit_label),
+            candidate
+        )
     }
 
     private fun keepTvFocusAboveBottomEdge(focused: View) {

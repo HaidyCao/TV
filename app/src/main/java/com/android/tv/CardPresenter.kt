@@ -66,20 +66,40 @@ class CardPresenter(
         holder.resetPreviewLayer()
         holder.clearCardBinding()
         holder.resetFocusVisual()
+        val cardView = holder.cardView
+        cardView.contentDescription = null
+        cardView.mainImageView?.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        cardView.findViewById<View>(androidx.leanback.R.id.title_text)?.importantForAccessibility =
+            View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        cardView.findViewById<View>(androidx.leanback.R.id.content_text)?.importantForAccessibility =
+            View.IMPORTANT_FOR_ACCESSIBILITY_NO
         if (item == null) return
         val movie = item as Movie
-        val cardView = holder.cardView
 
         Log.d(TAG, "onBindViewHolder")
-        cardView.titleText = movie.title?.trim().orEmpty().ifBlank {
+        val channelTitle = movie.title?.trim().orEmpty().ifBlank {
             cardView.context.getString(R.string.channel_placeholder_label)
         }
-        cardView.setCardContentText(movie.studio.takeUnless { movie.isLive })
+        cardView.titleText = channelTitle
+        val cardContentText = movie.studio.takeUnless { movie.isLive }?.trim().orEmpty()
+        cardView.setCardContentText(cardContentText.takeUnless { it.isBlank() })
         cardView.setMainImageDimensions(cardMetrics.imageWidthPx, cardMetrics.imageHeightPx)
-        cardView.badgeImage = if (isFavorite(movie)) {
+        val favorite = isFavorite(movie)
+        cardView.badgeImage = if (favorite) {
             ContextCompat.getDrawable(cardView.context, R.drawable.ic_favorite)
         } else {
             null
+        }
+        val visibleCardText = listOf(channelTitle, cardContentText)
+            .filter { it.isNotBlank() }
+            .joinToString("，")
+        cardView.contentDescription = if (favorite) {
+            cardView.context.getString(
+                R.string.channel_card_favorite_accessibility,
+                visibleCardText
+            )
+        } else {
+            visibleCardText
         }
         cardView.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_MENU && event.action == KeyEvent.ACTION_UP) {
@@ -122,6 +142,7 @@ class CardPresenter(
         val imageView = cardView.mainImageView ?: return
         imageView.tag = requestKey
         imageView.visibility = View.VISIBLE
+        imageView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
 
         val videoUrl = movie.videoUrl
         val cachedLiveFrame = if (movie.isLive && !videoUrl.isNullOrBlank()) {
@@ -176,6 +197,8 @@ class CardPresenter(
         holder.clearCardBinding()
         holder.resetFocusVisual()
         val cardView = holder.cardView
+        cardView.contentDescription = null
+        cardView.mainImageView?.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         // Remove references to images so that the garbage collector can free up memory
         cardView.mainImageView?.let { imageView ->
             // Leanback can recycle cards while the host Activity is already destroyed.

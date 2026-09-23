@@ -573,8 +573,13 @@ class PlaybackActivity : AppCompatActivity() {
                 label,
                 category.channels.size
             )
+            val accessibilityDescription = if (position == selectedPosition) {
+                R.string.playback_directory_category_current_accessibility
+            } else {
+                R.string.playback_directory_category_accessibility
+            }
             holder.row.contentDescription = getString(
-                R.string.playback_directory_category_accessibility,
+                accessibilityDescription,
                 label,
                 category.channels.size
             )
@@ -652,6 +657,8 @@ class PlaybackActivity : AppCompatActivity() {
                 setTextColor(0xFF9ED8FF.toInt())
                 visibility = View.GONE
             }
+            title.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            current.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             row.addView(title, LinearLayout.LayoutParams(
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                 android.view.ViewGroup.LayoutParams.WRAP_CONTENT

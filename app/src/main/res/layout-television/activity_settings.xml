@@ -78,6 +78,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
+                android:importantForAccessibility="no"
                 android:text="@string/settings_source_edit_label"
                 android:textColor="#C8FFFFFF"
                 android:textSize="17sp" />
@@ -104,6 +105,7 @@
                     android:layout_height="wrap_content"
                     android:ellipsize="middle"
                     android:hint="@string/source_url_hint"
+                    android:importantForAccessibility="no"
                     android:maxLines="1"
                     android:textColor="#FFFFFF"
                     android:textColorHint="#B8FFFFFF"
