@@ -37,20 +37,33 @@ internal class TvChannelPreviewController(
     private var activeVideoUrl: String? = null
     private var hasRenderedFirstFrame = false
     private var activeToken: Long = 0L
+    private var telemetryToken: Long? = null
+    private var pendingStartSettled: (() -> Unit)? = null
 
     /** Schedules a muted preview for the currently focused live card. */
-    fun schedule(movie: Movie, holder: CardPresenter.CardViewHolder) {
+    fun schedule(
+        movie: Movie,
+        holder: CardPresenter.CardViewHolder,
+        onStartSettled: () -> Unit = {}
+    ) {
         stop()
-        if (!TvChannelPreviewPolicy.canPreview(movie)) return
+        if (!TvChannelPreviewPolicy.canPreview(movie)) {
+            onStartSettled()
+            return
+        }
 
         val token = generation.current()
+        pendingStartSettled = onStartSettled
         pendingHolder = holder
         Log.d(TAG, "schedule ${logLabel(movie)}")
         pendingTask = Runnable {
             pendingTask = null
             pendingHolder = null
             if (!generation.isCurrent(token) || !isValidSelection(movie, holder)) {
-                if (generation.isCurrent(token)) stop()
+                if (generation.isCurrent(token)) {
+                    finishStartAttempt()
+                    stop()
+                }
                 return@Runnable
             }
             startPreview(token, movie, holder)
@@ -64,6 +77,7 @@ internal class TvChannelPreviewController(
         pendingTask?.let(handler::removeCallbacks)
         pendingTask = null
         pendingHolder = null
+        pendingStartSettled = null
 
         val oldPlayer = player
         // Clear the field before touching ExoPlayer. Releasing can synchronously
@@ -76,6 +90,7 @@ internal class TvChannelPreviewController(
         val oldMovieKey = activeMovieKey
         val oldVideoUrl = activeVideoUrl
         val oldHasRenderedFirstFrame = hasRenderedFirstFrame
+        val oldTelemetryToken = telemetryToken
 
         // TextureView.getBitmap() must run before the player detaches or releases
         // the surface. Only a confirmed first frame from the still-bound holder
@@ -99,6 +114,7 @@ internal class TvChannelPreviewController(
         activeVideoUrl = null
         hasRenderedFirstFrame = false
         activeToken = 0L
+        telemetryToken = null
 
         if (oldPlayer != null && oldTexture != null) {
             runCatching { oldPlayer.clearVideoTextureView(oldTexture) }
@@ -108,7 +124,9 @@ internal class TvChannelPreviewController(
                 // The active card keeps its frame even if the bitmap is too
                 // large for the shared cache; the cache only serves future
                 // bindings of this URL.
-                oldVideoUrl?.let { frameStore.put(it, lastFrame) }
+                oldVideoUrl?.let {
+                    frameStore.put(it, lastFrame, LivePreviewFrameOrigin.FOCUSED_STREAM)
+                }
                 oldHolder.showCapturedPreviewFrame(oldMovieKey, lastFrame)
             } else {
                 // Keep the existing logo/card image when the surface did not
@@ -118,6 +136,7 @@ internal class TvChannelPreviewController(
         }
 
         oldPlayer?.let {
+            oldTelemetryToken?.let { token -> PreviewStreamTelemetry.stopped(token) }
             runCatching { it.stop() }
             runCatching { it.clearMediaItems() }
             // Keep release independent from stop/clear: a broken codec state
@@ -153,8 +172,14 @@ internal class TvChannelPreviewController(
         movie: Movie,
         holder: CardPresenter.CardViewHolder
     ) {
-        if (!generation.isCurrent(token) || !isValidSelection(movie, holder)) return
-        val videoUrl = movie.videoUrl ?: return
+        if (!generation.isCurrent(token) || !isValidSelection(movie, holder)) {
+            finishStartAttempt()
+            return
+        }
+        val videoUrl = movie.videoUrl ?: run {
+            finishStartAttempt()
+            return
+        }
         val textureView = holder.ensurePreviewTexture()
         // Mark the surface before creating the player so a factory/setup
         // failure also resets the holder and removes the just-created texture.
@@ -171,6 +196,7 @@ internal class TvChannelPreviewController(
             }
         } catch (error: Exception) {
             Log.w(TAG, "error setup", error)
+            finishStartAttempt()
             stop()
             return
         }
@@ -182,6 +208,7 @@ internal class TvChannelPreviewController(
                     generation.isCurrent(token)
                 ) {
                     Log.d(TAG, "first-frame ${logLabel(movie)}")
+                    telemetryToken?.let { telemetry -> PreviewStreamTelemetry.firstFrame(telemetry) }
                     hasRenderedFirstFrame = true
                     holder.showPreviewFrame()
                 }
@@ -192,11 +219,13 @@ internal class TvChannelPreviewController(
                     generation.isCurrent(token)
                 ) {
                     Log.w(TAG, "error ${error.errorCodeName}")
+                    finishStartAttempt()
                     stop()
                 }
             }
         }.also(previewPlayer::addListener)
         Log.d(TAG, "start ${logLabel(movie)}")
+        telemetryToken = PreviewStreamTelemetry.started(PreviewStreamKind.FOCUSED)
         runCatching {
             previewPlayer.setVideoTextureView(textureView)
             previewPlayer.setMediaItem(MediaItem.fromUri(videoUrl))
@@ -204,8 +233,17 @@ internal class TvChannelPreviewController(
             previewPlayer.playWhenReady = true
         }.onFailure {
             Log.w(TAG, "error setup")
+            finishStartAttempt()
             stop()
+        }.onSuccess {
+            finishStartAttempt()
         }
+    }
+
+    private fun finishStartAttempt() {
+        val callback = pendingStartSettled ?: return
+        pendingStartSettled = null
+        callback()
     }
 
     private fun logLabel(movie: Movie): String {

@@ -16,27 +16,61 @@ class LivePreviewFrameStore(
     private val frames = ByteBoundedLruCache<String, Bitmap>(maxBytes) { bitmap ->
         bitmap.allocationByteCount
     }
+    private val origins = mutableMapOf<String, LivePreviewFrameOrigin>()
 
     fun get(videoUrl: String): Bitmap? {
         if (videoUrl.isBlank()) return null
         val bitmap = frames.get(videoUrl) ?: return null
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
             frames.remove(videoUrl)
+            synchronized(origins) { origins.remove(videoUrl) }
             return null
         }
         return bitmap
     }
 
+    fun get(videoUrl: String, mode: TvChannelPreviewMode): Bitmap? {
+        val origin = synchronized(origins) { origins[videoUrl] } ?: return null
+        if (!TvChannelPreviewModePolicy.canDisplayFrame(mode, origin)) return null
+        return get(videoUrl)
+    }
+
     /** Returns true when the frame remains in the cache after insertion. */
-    fun put(videoUrl: String, bitmap: Bitmap): Boolean {
+    fun put(videoUrl: String, bitmap: Bitmap): Boolean =
+        put(videoUrl, bitmap, LivePreviewFrameOrigin.FOCUSED_STREAM)
+
+    internal fun put(
+        videoUrl: String,
+        bitmap: Bitmap,
+        origin: LivePreviewFrameOrigin
+    ): Boolean {
         if (videoUrl.isBlank() || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
             return false
         }
-        return frames.put(videoUrl, bitmap)
+        val retained = frames.put(videoUrl, bitmap)
+        synchronized(origins) {
+            if (retained) origins[videoUrl] = origin else origins.remove(videoUrl)
+            origins.keys.retainAll(frames.keys())
+        }
+        return retained
+    }
+
+    /** Removes only frames captured for visible non-focused cards. */
+    fun clearStaticFrames() {
+        synchronized(origins) {
+            origins.filterValues { it == LivePreviewFrameOrigin.VISIBLE_STATIC_CAPTURE }
+                .keys
+                .toList()
+                .forEach { videoUrl ->
+                    frames.remove(videoUrl)
+                    origins.remove(videoUrl)
+                }
+        }
     }
 
     fun clear() {
         frames.clear()
+        synchronized(origins) { origins.clear() }
     }
 
     companion object {
@@ -83,6 +117,9 @@ internal class ByteBoundedLruCache<K, V>(
         entries.clear()
         currentBytes = 0
     }
+
+    @Synchronized
+    fun keys(): Set<K> = entries.keys.toSet()
 
     internal val sizeBytes: Int
         @Synchronized get() = currentBytes

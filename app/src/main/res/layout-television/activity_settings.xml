@@ -243,8 +243,8 @@
                 android:background="@drawable/tv_settings_button_background"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
-                android:nextFocusDown="@id/preview_focus_row"
-                android:nextFocusForward="@id/preview_focus_row"
+                android:nextFocusDown="@id/preview_mode_off"
+                android:nextFocusForward="@id/preview_mode_off"
                 android:nextFocusUp="@id/btn_save"
                 android:text="@string/settings_restore_source"
                 android:textAllCaps="false"
@@ -283,43 +283,73 @@
                 android:id="@+id/preview_description"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="20dp"
                 android:layout_marginBottom="8dp"
-                android:text="@string/channel_preview_description"
+                android:text="@string/tv_preview_mode_intro"
                 android:textColor="#C8FFFFFF"
                 android:textSize="18sp" />
 
-            <LinearLayout
+            <RadioGroup
                 android:id="@+id/preview_focus_row"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:clickable="true"
-                android:focusable="true"
-                android:focusableInTouchMode="true"
-                android:importantForAccessibility="yes"
-                android:contentDescription="@string/channel_preview_title"
-                android:nextFocusForward="@id/source_cache_status"
-                android:nextFocusDown="@id/source_cache_status"
-                android:nextFocusUp="@id/btn_restore_source"
-                android:orientation="vertical"
-                android:paddingBottom="8dp">
+                android:focusable="false"
+                android:orientation="vertical">
 
-                <androidx.appcompat.widget.SwitchCompat
-                    android:id="@+id/switch_preview_enabled"
+                <RadioButton
+                    android:id="@+id/preview_mode_off"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
                     android:background="@drawable/tv_settings_switch_focus_background"
-                    android:clickable="false"
-                    android:focusable="false"
-                    android:focusableInTouchMode="false"
-                    android:importantForAccessibility="no"
-                    android:minHeight="64dp"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp"
-                    android:text="@string/channel_preview_title"
+                    android:focusable="true"
+                    android:focusableInTouchMode="true"
+                    android:nextFocusUp="@id/btn_restore_source"
+                    android:nextFocusDown="@id/preview_mode_focused"
+                    android:nextFocusForward="@id/preview_mode_focused"
+                    android:buttonTint="#FFFFFF"
+                    android:minHeight="76dp"
+                    android:padding="16dp"
+                    android:text="@string/tv_preview_mode_off"
                     android:textColor="#FFFFFF"
-                    android:textSize="21sp" />
-            </LinearLayout>
+                    android:textSize="18sp" />
+
+                <RadioButton
+                    android:id="@+id/preview_mode_focused"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:background="@drawable/tv_settings_switch_focus_background"
+                    android:focusable="true"
+                    android:focusableInTouchMode="true"
+                    android:nextFocusUp="@id/preview_mode_off"
+                    android:nextFocusDown="@id/preview_mode_full"
+                    android:nextFocusForward="@id/preview_mode_full"
+                    android:buttonTint="#FFFFFF"
+                    android:minHeight="76dp"
+                    android:padding="16dp"
+                    android:text="@string/tv_preview_mode_focused"
+                    android:textColor="#FFFFFF"
+                    android:textSize="18sp" />
+
+                <RadioButton
+                    android:id="@+id/preview_mode_full"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginBottom="8dp"
+                    android:background="@drawable/tv_settings_switch_focus_background"
+                    android:focusable="true"
+                    android:focusableInTouchMode="true"
+                    android:nextFocusUp="@id/preview_mode_focused"
+                    android:nextFocusDown="@id/source_cache_status"
+                    android:nextFocusForward="@id/source_cache_status"
+                    android:buttonTint="#FFFFFF"
+                    android:minHeight="76dp"
+                    android:padding="16dp"
+                    android:text="@string/tv_preview_mode_full"
+                    android:textColor="#FFFFFF"
+                    android:textSize="18sp" />
+            </RadioGroup>
         </LinearLayout>
 
         <LinearLayout
@@ -348,7 +378,7 @@
                 android:focusableInTouchMode="true"
                 android:nextFocusDown="@id/settings_about_text"
                 android:nextFocusForward="@id/settings_about_text"
-                android:nextFocusUp="@id/preview_focus_row"
+                android:nextFocusUp="@id/preview_mode_full"
                 android:padding="16dp"
                 android:text="@string/source_cache_empty"
                 android:textColor="#D0FFFFFF"

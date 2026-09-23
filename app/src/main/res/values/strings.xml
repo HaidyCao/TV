@@ -83,10 +83,11 @@
     <string name="source_activation_success">节目单解析成功并已切换：%1$d 个分组，%2$d 个可播放直播频道。未逐路验证视频播放。</string>
     <string name="source_activation_failed">切换失败，当前节目源和频道列表保持不变。请检查地址和网络后重试。</string>
     <string name="channel_preview_title">频道卡片静音预览</string>
-    <string name="channel_preview_description">最多预览一路直播，会消耗流量</string>
-    <string name="channel_preview_accessibility_state">%1$s，%2$s</string>
-    <string name="channel_preview_enabled_state">已开启</string>
-    <string name="channel_preview_disabled_state">已关闭</string>
+    <string name="channel_preview_description">此开关只控制手机首页预览，不影响电视端设置。</string>
+    <string name="tv_preview_mode_intro">仅影响电视首页。画面由频道卡片显示；静态帧模式会逐个请求当前可见频道的画面，流量较高。</string>
+    <string name="tv_preview_mode_off">关闭\n不连接预览直播流，卡片显示封面；不消耗预览流量。</string>
+    <string name="tv_preview_mode_focused">仅焦点频道（静音直播）\n焦点卡片播放静音直播；其他卡片显示封面或保留曾选中频道的最后一帧。</string>
+    <string name="tv_preview_mode_full">焦点直播 + 可见频道静态帧\n焦点卡片播放静音直播；稳定可见的非焦点频道逐个连接抓取一帧，流量最高。</string>
     <string name="playback_error">播放失败，请检查网络或切换频道后重试</string>
     <string name="playback_connecting">正在连接直播源…</string>
     <string name="playback_buffering">正在缓冲…</string>

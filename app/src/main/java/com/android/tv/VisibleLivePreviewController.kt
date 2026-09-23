@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.TextureView
 import androidx.media3.common.MediaItem
@@ -33,6 +34,11 @@ internal class VisibleLivePreviewController(
     private var generation = 0L
     private var active: Active? = null
     private var timeoutTask: Runnable? = null
+    private var settleTask: Runnable? = null
+    private var settleDeadlineMs: Long? = null
+    private var settledSinceViewportChange = false
+    private var scrollQuietUntilMs = 0L
+    private var focusPriorityPending = false
 
     /** Registers or refreshes one visible holder. Requests are de-duplicated by URL. */
     fun request(movie: Movie, holder: CardPresenter.CardViewHolder) {
@@ -80,6 +86,10 @@ internal class VisibleLivePreviewController(
     fun pause() {
         paused = true
         requestQueue.clear()
+        cancelSettleTask()
+        settleDeadlineMs = null
+        settledSinceViewportChange = false
+        scrollQuietUntilMs = 0L
         cancelActive(resetHolder = true)
     }
 
@@ -89,27 +99,85 @@ internal class VisibleLivePreviewController(
         pump()
     }
 
+    /** Gives the delayed focused stream the first connection opportunity. */
+    fun setFocusPriorityPending(pending: Boolean) {
+        val wasPending = focusPriorityPending
+        focusPriorityPending = pending
+        if (pending) {
+            cancelActive(resetHolder = true)
+        } else if (!paused) {
+            settledSinceViewportChange = false
+            settleDeadlineMs = VisiblePreviewSettlePolicy.focusReleaseDeadline(
+                SystemClock.uptimeMillis(),
+                settleDeadlineMs,
+                FOCUS_RELEASE_SETTLE_MS
+            )
+            cancelSettleTask()
+            scheduleSettleTask()
+        } else if (wasPending) {
+            settledSinceViewportChange = false
+            settleDeadlineMs = null
+            cancelSettleTask()
+        }
+    }
+
+    /** Called only by real scroll callbacks, never by layout/visibility changes. */
+    fun onViewportScrolled() {
+        if (paused || cleaningUp) return
+        settledSinceViewportChange = false
+        scrollQuietUntilMs = VisiblePreviewSettlePolicy.scrollDeadline(
+            SystemClock.uptimeMillis(),
+            VIEWPORT_QUIET_PERIOD_MS
+        )
+        settleDeadlineMs = scrollQuietUntilMs
+        cancelSettleTask()
+        cancelActive(resetHolder = true)
+        scheduleSettleTask()
+    }
+
     /** Stops I/O and forgets all holders when rows are replaced. */
     fun reset() {
         pause()
         targets.clear()
         failedUrls.clear()
         requestQueue.clear()
+        focusPriorityPending = false
+        settleDeadlineMs = null
+        scrollQuietUntilMs = 0L
     }
 
     /** Releases the controller with no retained callbacks or holder references. */
     fun release() {
         reset()
+        cancelSettleTask()
         timeoutTask?.let(handler::removeCallbacks)
         timeoutTask = null
-        handler.removeCallbacksAndMessages(null)
     }
 
     private fun pump() {
-        if (paused || active != null) return
+        if (paused || active != null || focusPriorityPending) return
 
         pruneInvalidTargets()
         enqueueEligibleUrls()
+
+        if (targets.values.none(::isEligible)) {
+            if (targets.isEmpty()) {
+                settledSinceViewportChange = false
+                settleDeadlineMs = null
+                cancelSettleTask()
+            }
+            return
+        }
+
+        if (!settledSinceViewportChange) {
+            settleDeadlineMs = VisiblePreviewSettlePolicy.initialDeadline(
+                settleDeadlineMs,
+                SystemClock.uptimeMillis(),
+                INITIAL_SETTLE_DELAY_MS
+            )
+            scheduleSettleTask()
+            return
+        }
 
         while (true) {
             val request = requestQueue.pollSkipping(failedUrls) ?: return
@@ -121,7 +189,10 @@ internal class VisibleLivePreviewController(
                 target.videoUrl == request.videoUrl && isEligible(target)
             }
             if (target == null) continue
-            start(target)
+            // Measure against the viewport's own quiet deadline, independently
+            // of the scheduler state that normally prevents such starts.
+            val duringScroll = SystemClock.uptimeMillis() < scrollQuietUntilMs
+            start(target, duringScroll)
             return
         }
     }
@@ -162,7 +233,7 @@ internal class VisibleLivePreviewController(
         ) && !failedUrls.contains(target.videoUrl)
     }
 
-    private fun start(target: Target) {
+    private fun start(target: Target, duringScroll: Boolean) {
         if (!isEligible(target)) {
             pump()
             return
@@ -188,6 +259,15 @@ internal class VisibleLivePreviewController(
             return
         }
 
+        // Creating the low-resolution player can take long enough for a row
+        // to scroll or lose focus. Recheck before opening the network source.
+        if (!isEligible(target)) {
+            runCatching { player.release() }
+            target.holder.resetPreviewLayerIfBound(target.requestKey)
+            pump()
+            return
+        }
+
         val token = ++generation
         val listener = object : Player.Listener {
             override fun onRenderedFirstFrame() {
@@ -201,6 +281,7 @@ internal class VisibleLivePreviewController(
                         pump()
                         return@post
                     }
+                    PreviewStreamTelemetry.firstFrame(current.telemetryToken)
                     val bitmap = captureRenderedFrame(textureView)
                     if (bitmap == null) {
                         fail(target, resetHolder = true)
@@ -219,12 +300,16 @@ internal class VisibleLivePreviewController(
             }
         }
 
-        active = Active(token, target, player, textureView, listener)
+        val telemetryToken = PreviewStreamTelemetry.started(
+            PreviewStreamKind.STATIC,
+            duringScroll = duringScroll
+        )
+        active = Active(token, target, player, textureView, listener, telemetryToken)
         player.addListener(listener)
         timeoutTask = Runnable {
             val current = active
             if (current?.token == token && current.player === player) {
-                Log.w(TAG, "static preview timed out for ${target.videoUrl}")
+                Log.w(TAG, "static preview timed out")
                 fail(target, resetHolder = true)
             }
         }.also { handler.postDelayed(it, STATIC_CAPTURE_TIMEOUT_MS) }
@@ -234,8 +319,8 @@ internal class VisibleLivePreviewController(
             player.setMediaItem(MediaItem.fromUri(target.videoUrl))
             player.prepare()
             player.playWhenReady = true
-        } catch (error: Exception) {
-            Log.w(TAG, "static preview setup failed", error)
+        } catch (_: Exception) {
+            Log.w(TAG, "static preview setup failed")
             fail(target, resetHolder = true)
         }
     }
@@ -249,7 +334,11 @@ internal class VisibleLivePreviewController(
         try {
             // The cache is URL keyed, so all still-valid occurrences in the
             // favorites and category rows can reuse this one captured bitmap.
-            frameStore.put(target.videoUrl, bitmap)
+            frameStore.put(
+                target.videoUrl,
+                bitmap,
+                LivePreviewFrameOrigin.VISIBLE_STATIC_CAPTURE
+            )
             val matchingTargets = targets.values.filter { it.videoUrl == target.videoUrl }
             matchingTargets.forEach { candidate ->
                 candidate.holder.showCapturedPreviewFrameIfVisibleAndUnfocused(
@@ -285,6 +374,7 @@ internal class VisibleLivePreviewController(
     private fun disposeActive(resetHolder: Boolean) {
         val current = active ?: return
         active = null
+        PreviewStreamTelemetry.stopped(current.telemetryToken)
         timeoutTask?.let(handler::removeCallbacks)
         timeoutTask = null
         generation += 1
@@ -327,6 +417,33 @@ internal class VisibleLivePreviewController(
             }
     }
 
+    private fun scheduleSettleTask() {
+        if (settleTask != null) return
+        val deadline = settleDeadlineMs ?: return
+        val delay = VisiblePreviewSettlePolicy.remainingDelay(SystemClock.uptimeMillis(), deadline)
+        settleTask = Runnable {
+            settleTask = null
+            if (paused || cleaningUp) return@Runnable
+            val currentDeadline = settleDeadlineMs
+            if (currentDeadline != null &&
+                VisiblePreviewSettlePolicy.remainingDelay(SystemClock.uptimeMillis(), currentDeadline) > 0L
+            ) {
+                scheduleSettleTask()
+                return@Runnable
+            }
+            settleDeadlineMs = null
+            settledSinceViewportChange = true
+            // pump() rechecks every holder's binding, visibility, focus, and
+            // frame cache after the viewport has settled.
+            pump()
+        }.also { handler.postDelayed(it, delay) }
+    }
+
+    private fun cancelSettleTask() {
+        settleTask?.let(handler::removeCallbacks)
+        settleTask = null
+    }
+
     private fun previewKey(movie: Movie): String {
         return "${movie.id}:${movie.videoUrl.orEmpty()}"
     }
@@ -343,7 +460,8 @@ internal class VisibleLivePreviewController(
         val target: Target,
         val player: ExoPlayer,
         val textureView: TextureView,
-        val listener: Player.Listener
+        val listener: Player.Listener,
+        val telemetryToken: Long
     )
 
     companion object {
@@ -351,5 +469,8 @@ internal class VisibleLivePreviewController(
         // A stalled URL must yield the single capture slot quickly so that
         // another currently visible row can still receive a static frame.
         private const val STATIC_CAPTURE_TIMEOUT_MS = 2_500L
+        private const val INITIAL_SETTLE_DELAY_MS = 180L
+        private const val VIEWPORT_QUIET_PERIOD_MS = 300L
+        private const val FOCUS_RELEASE_SETTLE_MS = 180L
     }
 }

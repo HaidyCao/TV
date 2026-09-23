@@ -13,6 +13,8 @@ import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.view.ContextThemeWrapper
@@ -40,7 +42,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var saveSourceButton: Button
     private lateinit var sourceUrlFocusContainer: View
     private lateinit var sourceUrlDisplay: TextView
-    private lateinit var previewFocusRow: View
+    private lateinit var previewModeRadioGroup: RadioGroup
+    private lateinit var previewModeOffButton: RadioButton
+    private lateinit var previewModeFocusedButton: RadioButton
+    private lateinit var previewModeFullButton: RadioButton
     private lateinit var sourceCurrentHost: TextView
     private lateinit var sourceCurrentUrl: TextView
     private lateinit var sourceRuntimeStatus: TextView
@@ -75,14 +80,21 @@ class SettingsActivity : AppCompatActivity() {
         restoreSourceButton = findViewById(R.id.btn_restore_source)
         saveSourceButton = findViewById(R.id.btn_save)
         val btnSave = saveSourceButton
-        val previewSwitch = findViewById<SwitchCompat>(R.id.switch_preview_enabled)
+        val previewSwitch: SwitchCompat? = if (isTvUiMode) {
+            null
+        } else {
+            findViewById(R.id.switch_preview_enabled)
+        }
 
         editSourceUrl.setText(TvDataManager.getSourceUrl(this))
         if (isTvUiMode) {
             settingsScrollView = findViewById(R.id.settings_scroll_view)
             sourceUrlFocusContainer = findViewById(R.id.source_url_focus_container)
             sourceUrlDisplay = findViewById(R.id.source_url_display)
-            previewFocusRow = findViewById(R.id.preview_focus_row)
+            previewModeRadioGroup = findViewById(R.id.preview_focus_row)
+            previewModeOffButton = findViewById(R.id.preview_mode_off)
+            previewModeFocusedButton = findViewById(R.id.preview_mode_focused)
+            previewModeFullButton = findViewById(R.id.preview_mode_full)
             sourceCurrentHost = findViewById(R.id.source_current_host)
             sourceCurrentUrl = findViewById(R.id.source_current_url)
             sourceRuntimeStatus = findViewById(R.id.source_runtime_status)
@@ -96,6 +108,9 @@ class SettingsActivity : AppCompatActivity() {
                 testSourceButton,
                 btnSave,
                 restoreSourceButton,
+                previewModeOffButton,
+                previewModeFocusedButton,
+                previewModeFullButton,
                 findViewById(R.id.source_cache_status),
                 settingsAboutText
             ).forEach { focusTarget: View ->
@@ -126,29 +141,12 @@ class SettingsActivity : AppCompatActivity() {
                     false
                 }
             }
-            previewFocusRow.setOnClickListener { previewSwitch.performClick() }
-            previewFocusRow.setOnFocusChangeListener { focused, hasFocus ->
-                previewSwitch.isSelected = hasFocus
-                if (hasFocus) keepTvFocusAboveBottomEdge(focused)
-            }
-            val focusPreviewOnDown = View.OnKeyListener { _, keyCode, event ->
-                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && event.action == KeyEvent.ACTION_DOWN) {
-                    if (!previewFocusRow.requestFocus()) {
-                        previewFocusRow.post {
-                            if (!isFinishing && !isDestroyed) previewFocusRow.requestFocus()
-                        }
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
             val focusPreviousOrPreviewOnDown = View.OnKeyListener { _, keyCode, event ->
                 if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && event.action == KeyEvent.ACTION_DOWN) {
                     val target = if (restoreSourceButton.visibility == View.VISIBLE) {
                         restoreSourceButton
                     } else {
-                        previewFocusRow
+                        previewModeOffButton
                     }
                     if (!target.requestFocus()) {
                         target.post {
@@ -162,18 +160,33 @@ class SettingsActivity : AppCompatActivity() {
             }
             btnSave.setOnKeyListener(focusPreviousOrPreviewOnDown)
             testSourceButton.setOnKeyListener(focusPreviousOrPreviewOnDown)
-            restoreSourceButton.setOnKeyListener(focusPreviewOnDown)
+            restoreSourceButton.setOnKeyListener(
+                View.OnKeyListener { _, keyCode, event ->
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
+                        event.action == KeyEvent.ACTION_DOWN
+                    ) {
+                        previewModeOffButton.requestFocus()
+                        true
+                    } else {
+                        false
+                    }
+                }
+            )
             restoreSourceButton.setOnFocusChangeListener { focused, hasFocus ->
                 if (hasFocus) keepTvFocusAboveBottomEdge(focused)
+            }
+            previewModeRadioGroup.check(tvPreviewModeButtonId(ChannelPreviewPreferences.getTvMode(this)))
+            previewModeRadioGroup.setOnCheckedChangeListener { _, checkedId ->
+                tvPreviewModeForButton(checkedId)?.let { ChannelPreviewPreferences.setTvMode(this, it) }
             }
             observeTvSourceState()
             ChannelRepository.ensureLoaded(applicationContext)
         }
-        previewSwitch.isChecked = ChannelPreviewPreferences.isEnabled(this)
-        if (isTvUiMode) updatePreviewFocusAccessibility(previewSwitch.isChecked)
-        previewSwitch.setOnCheckedChangeListener { _, enabled ->
-            ChannelPreviewPreferences.setEnabled(this, enabled)
-            if (isTvUiMode) updatePreviewFocusAccessibility(enabled)
+        previewSwitch?.let { phonePreviewSwitch ->
+            phonePreviewSwitch.isChecked = ChannelPreviewPreferences.isEnabled(this)
+            phonePreviewSwitch.setOnCheckedChangeListener { _, enabled ->
+                ChannelPreviewPreferences.setEnabled(this, enabled)
+            }
         }
         editSourceUrl.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -419,17 +432,17 @@ class SettingsActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun updatePreviewFocusAccessibility(isEnabled: Boolean) {
-        val stateStringId = if (isEnabled) {
-            R.string.channel_preview_enabled_state
-        } else {
-            R.string.channel_preview_disabled_state
-        }
-        previewFocusRow.contentDescription = getString(
-            R.string.channel_preview_accessibility_state,
-            getString(R.string.channel_preview_title),
-            getString(stateStringId)
-        )
+    private fun tvPreviewModeButtonId(mode: TvChannelPreviewMode): Int = when (mode) {
+        TvChannelPreviewMode.OFF -> R.id.preview_mode_off
+        TvChannelPreviewMode.FOCUSED_ONLY -> R.id.preview_mode_focused
+        TvChannelPreviewMode.FOCUSED_AND_VISIBLE -> R.id.preview_mode_full
+    }
+
+    private fun tvPreviewModeForButton(buttonId: Int): TvChannelPreviewMode? = when (buttonId) {
+        R.id.preview_mode_off -> TvChannelPreviewMode.OFF
+        R.id.preview_mode_focused -> TvChannelPreviewMode.FOCUSED_ONLY
+        R.id.preview_mode_full -> TvChannelPreviewMode.FOCUSED_AND_VISIBLE
+        else -> null
     }
 
     private fun isCurrentCandidate(generation: Long, candidateUrl: String): Boolean {
@@ -489,11 +502,12 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         if (isTvUiMode) {
-            val next = if (info == null) previewFocusRow else restoreSourceButton
+            val next = if (info == null) previewModeOffButton else restoreSourceButton
             testSourceButton.nextFocusDownId = next.id
             saveSourceButton.nextFocusDownId = next.id
             restoreSourceButton.nextFocusUpId = saveSourceButton.id
-            previewFocusRow.nextFocusUpId = if (info == null) saveSourceButton.id else restoreSourceButton.id
+            previewModeOffButton.nextFocusUpId =
+                if (info == null) saveSourceButton.id else restoreSourceButton.id
         }
     }
 

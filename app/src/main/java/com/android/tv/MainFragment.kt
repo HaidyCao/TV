@@ -49,6 +49,7 @@ class MainFragment : BrowseSupportFragment() {
     private var visibleLivePreviewController: VisibleLivePreviewController? = null
     private var focusedPreviewMovie: Movie? = null
     private var focusedPreviewHolder: CardPresenter.CardViewHolder? = null
+    private var appliedPreviewMode = TvChannelPreviewMode.FOCUSED_AND_VISIBLE
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
     private var rowsInitialized = false
@@ -66,6 +67,7 @@ class MainFragment : BrowseSupportFragment() {
         initialFocusApplied = false
         pendingFocusRestore = savedFocusPosition
         pendingFavoriteFocusRestore = null
+        appliedPreviewMode = ChannelPreviewPreferences.getTvMode(requireContext())
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
         previewFrameManager = PreviewFrameManager()
         livePreviewFrameStore = LivePreviewFrameStore()
@@ -86,15 +88,47 @@ class MainFragment : BrowseSupportFragment() {
 
     override fun onResume() {
         super.onResume()
-        if (!ChannelPreviewPreferences.isEnabled(requireContext())) {
-            tvChannelPreviewController?.stop()
+        val storedPreviewMode = ChannelPreviewPreferences.getTvMode(requireContext())
+        if (storedPreviewMode != appliedPreviewMode) {
+            val previousMode = appliedPreviewMode
             visibleLivePreviewController?.pause()
+            tvChannelPreviewController?.stop()
+            if (storedPreviewMode == TvChannelPreviewMode.OFF) {
+                livePreviewFrameStore?.clear()
+            } else if (
+                previousMode == TvChannelPreviewMode.FOCUSED_AND_VISIBLE &&
+                storedPreviewMode == TvChannelPreviewMode.FOCUSED_ONLY
+            ) {
+                livePreviewFrameStore?.clearStaticFrames()
+            }
+            appliedPreviewMode = storedPreviewMode
+            pendingFocusRestore = pendingResumeFocusRestore ?: savedFocusPosition
+            pendingResumeFocusRestore = null
+            initialFocusApplied = false
+            initialFocusPending = false
+            renderRows(latestGroups, force = true)
+        }
+        if (!TvChannelPreviewModePolicy.allowsFocusedStream(appliedPreviewMode)) {
+            visibleLivePreviewController?.pause()
+            visibleLivePreviewController?.setFocusPriorityPending(false)
+            tvChannelPreviewController?.stop()
         } else {
-            visibleLivePreviewController?.resume()
+            if (TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode)) {
+                visibleLivePreviewController?.resume()
+            } else {
+                visibleLivePreviewController?.pause()
+            }
             val movie = focusedPreviewMovie
             val holder = focusedPreviewHolder
             if (movie != null && holder != null && holder.cardView.hasFocus()) {
-                tvChannelPreviewController?.schedule(movie, holder)
+                val focusPreviewEligible = TvChannelPreviewPolicy.canPreview(movie)
+                visibleLivePreviewController?.setFocusPriorityPending(
+                    TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode) &&
+                        focusPreviewEligible
+                )
+                tvChannelPreviewController?.schedule(movie, holder) {
+                    visibleLivePreviewController?.setFocusPriorityPending(false)
+                }
             }
         }
         val updatedFavorites = ChannelFavorites.favoriteKeys(requireContext())
@@ -107,6 +141,7 @@ class MainFragment : BrowseSupportFragment() {
 
     override fun onPause() {
         visibleLivePreviewController?.pause()
+        visibleLivePreviewController?.setFocusPriorityPending(false)
         tvChannelPreviewController?.stop()
         super.onPause()
     }
@@ -178,6 +213,7 @@ class MainFragment : BrowseSupportFragment() {
         focusRequestToken += 1L
         initialFocusPending = false
         visibleLivePreviewController?.reset()
+        visibleLivePreviewController?.setFocusPriorityPending(false)
         tvChannelPreviewController?.stop()
         focusedPreviewMovie = null
         focusedPreviewHolder = null
@@ -196,15 +232,27 @@ class MainFragment : BrowseSupportFragment() {
                 } else if (focusedPreviewHolder === holder) {
                     focusedPreviewMovie = null
                     focusedPreviewHolder = null
+                    visibleLivePreviewController?.setFocusPriorityPending(false)
                 }
-                if (hasFocus && ChannelPreviewPreferences.isEnabled(holder.cardView.context)) {
-                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                if (hasFocus &&
+                    TvChannelPreviewModePolicy.allowsFocusedStream(appliedPreviewMode)
+                ) {
+                    val focusPreviewEligible = TvChannelPreviewPolicy.canPreview(movie)
+                    visibleLivePreviewController?.setFocusPriorityPending(
+                        TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode) &&
+                            focusPreviewEligible
+                    )
+                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode)
+                    ) {
                         visibleLivePreviewController?.resume()
                     }
-                    tvChannelPreviewController?.schedule(movie, holder)
+                    tvChannelPreviewController?.schedule(movie, holder) {
+                        visibleLivePreviewController?.setFocusPriorityPending(false)
+                    }
                 } else {
                     tvChannelPreviewController?.stopIfAttached(holder)
-                    if (ChannelPreviewPreferences.isEnabled(holder.cardView.context)) {
+                    if (TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode)) {
                         visibleLivePreviewController?.request(movie, holder)
                     } else {
                         visibleLivePreviewController?.cancel(holder)
@@ -213,7 +261,7 @@ class MainFragment : BrowseSupportFragment() {
             },
             onCardVisibilityChanged = { movie, holder, isVisible ->
                 if (isVisible &&
-                    ChannelPreviewPreferences.isEnabled(holder.cardView.context) &&
+                    TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode) &&
                     !holder.isFocused()
                 ) {
                     visibleLivePreviewController?.request(movie, holder)
@@ -221,7 +269,9 @@ class MainFragment : BrowseSupportFragment() {
                     visibleLivePreviewController?.cancel(holder)
                 }
             },
-            cardMetrics = cardMetrics
+            cardMetrics = cardMetrics,
+            previewMode = appliedPreviewMode,
+            onCardScrolled = { visibleLivePreviewController?.onViewportScrolled() }
         )
 
         val favorites = FavoriteChannelResolver.resolve(tvGroups.values.flatten(), favoriteKeys)
@@ -246,7 +296,7 @@ class MainFragment : BrowseSupportFragment() {
         rowsInitialized = true
         requestInitialFocusIfNeeded()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-            ChannelPreviewPreferences.isEnabled(requireContext())
+            TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode)
         ) {
             visibleLivePreviewController?.resume()
         }
@@ -381,6 +431,7 @@ class MainFragment : BrowseSupportFragment() {
         }
         pendingResumeFocusRestore = savedFocusPosition
         visibleLivePreviewController?.pause()
+        visibleLivePreviewController?.setFocusPriorityPending(false)
         tvChannelPreviewController?.stop()
         startActivity(Intent(requireActivity(), SettingsActivity::class.java))
     }
@@ -415,6 +466,7 @@ class MainFragment : BrowseSupportFragment() {
         if (focusedPreviewHolder === holder) {
             focusedPreviewMovie = null
             focusedPreviewHolder = null
+            visibleLivePreviewController?.setFocusPriorityPending(false)
         }
         tvChannelPreviewController?.stopIfAttached(holder)
     }
@@ -446,6 +498,7 @@ class MainFragment : BrowseSupportFragment() {
     private fun setupEventListeners() {
         setOnSearchClickedListener {
             visibleLivePreviewController?.pause()
+            visibleLivePreviewController?.setFocusPriorityPending(false)
             tvChannelPreviewController?.stop()
             pendingResumeFocusRestore = savedFocusPosition
             startActivity(Intent(requireActivity(), SearchActivity::class.java))
@@ -461,8 +514,9 @@ class MainFragment : BrowseSupportFragment() {
             rowViewHolder: RowPresenter.ViewHolder,
             row: Row
         ) {
-            tvChannelPreviewController?.stop()
             visibleLivePreviewController?.pause()
+            visibleLivePreviewController?.setFocusPriorityPending(false)
+            tvChannelPreviewController?.stop()
             when (item) {
                 is Movie -> openMovie(item, itemViewHolder)
             }
@@ -470,6 +524,8 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     private fun openMovie(movie: Movie, itemViewHolder: Presenter.ViewHolder) {
+        visibleLivePreviewController?.pause()
+        visibleLivePreviewController?.setFocusPriorityPending(false)
         tvChannelPreviewController?.stop()
         val intent = Intent(
             requireActivity(),
@@ -503,13 +559,14 @@ class MainFragment : BrowseSupportFragment() {
                 backgroundUri = item.backgroundImageUrl
                 scheduleBackgroundUpdate()
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-                    ChannelPreviewPreferences.isEnabled(requireContext())
+                    TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode)
                 ) {
                     visibleLivePreviewController?.resume()
                 }
             } else {
                 tvChannelPreviewController?.stop()
                 visibleLivePreviewController?.pause()
+                visibleLivePreviewController?.setFocusPriorityPending(false)
             }
         }
     }

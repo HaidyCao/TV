@@ -27,7 +27,9 @@ class CardPresenter(
     private val onCardUnbound: ((CardViewHolder) -> Unit)? = null,
     private val onCardFocusChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null,
     private val onCardVisibilityChanged: ((Movie, CardViewHolder, Boolean) -> Unit)? = null,
-    private val cardMetrics: TvCardMetrics = TvCardMetrics.legacy()
+    private val cardMetrics: TvCardMetrics = TvCardMetrics.legacy(),
+    private val previewMode: TvChannelPreviewMode = TvChannelPreviewMode.FOCUSED_AND_VISIBLE,
+    private val onCardScrolled: (() -> Unit)? = null
 ) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
     private var mLiveCardImage: Drawable? = null
@@ -59,6 +61,7 @@ class CardPresenter(
         // preview surface before painting the new channel into that holder.
         holder.setCardFocusChangedListener(null)
         holder.setCardVisibilityChangedListener(null)
+        holder.setCardScrollChangedListener(null)
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
         holder.clearCardBinding()
@@ -115,13 +118,14 @@ class CardPresenter(
         holder.setCardVisibilityChangedListener { isVisible ->
             onCardVisibilityChanged?.invoke(movie, holder, isVisible)
         }
+        holder.setCardScrollChangedListener { onCardScrolled?.invoke() }
         val imageView = cardView.mainImageView ?: return
         imageView.tag = requestKey
         imageView.visibility = View.VISIBLE
 
         val videoUrl = movie.videoUrl
         val cachedLiveFrame = if (movie.isLive && !videoUrl.isNullOrBlank()) {
-            livePreviewFrameStore?.get(videoUrl)
+            livePreviewFrameStore?.get(videoUrl, previewMode)
         } else {
             null
         }
@@ -166,6 +170,7 @@ class CardPresenter(
         val holder = viewHolder as CardViewHolder
         holder.setCardFocusChangedListener(null)
         holder.setCardVisibilityChangedListener(null)
+        holder.setCardScrollChangedListener(null)
         onCardUnbound?.invoke(holder)
         holder.resetPreviewLayer()
         holder.clearCardBinding()
@@ -229,6 +234,10 @@ class CardPresenter(
             cardView.setCardVisibilityChangedListener(listener)
         }
 
+        fun setCardScrollChangedListener(listener: (() -> Unit)?) {
+            cardView.setCardScrollChangedListener(listener)
+        }
+
         internal fun resetFocusVisual() = cardView.resetFocusVisual()
 
         internal fun refreshFocusVisual(animate: Boolean) = cardView.refreshFocusVisual(animate)
@@ -272,11 +281,13 @@ class CardPresenter(
             private set
         private var cardFocusChangedListener: ((Boolean) -> Unit)? = null
         private var cardVisibilityChangedListener: ((Boolean) -> Unit)? = null
+        private var cardScrollChangedListener: (() -> Unit)? = null
         private var previewFrameShown = false
         private val visibilityObserver = ViewTreeObserver.OnGlobalLayoutListener {
             dispatchVisibilityChanged()
         }
         private val scrollObserver = ViewTreeObserver.OnScrollChangedListener {
+            cardScrollChangedListener?.invoke()
             dispatchVisibilityChanged()
         }
 
@@ -331,6 +342,10 @@ class CardPresenter(
             listener?.invoke(isActuallyVisible())
         }
 
+        fun setCardScrollChangedListener(listener: (() -> Unit)?) {
+            cardScrollChangedListener = listener
+        }
+
         fun isActuallyVisible(): Boolean {
             if (!isAttachedToWindow || !isShown || width <= 0 || height <= 0) return false
             val visibleRect = android.graphics.Rect()
@@ -354,6 +369,7 @@ class CardPresenter(
                 viewTreeObserver.removeOnGlobalLayoutListener(visibilityObserver)
                 viewTreeObserver.removeOnScrollChangedListener(scrollObserver)
             }
+            cardScrollChangedListener = null
             cardVisibilityChangedListener?.invoke(false)
             super.onDetachedFromWindow()
         }
