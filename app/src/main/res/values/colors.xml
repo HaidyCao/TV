@@ -7,4 +7,8 @@
     <color name="default_background">#172631</color>
     <color name="card_info_background">#172631</color>
     <color name="focus_accent">#F4A340</color>
+    <color name="tv_status_progress_text">#FFE8EDF0</color>
+    <color name="tv_status_info_text">#FFB9E4EA</color>
+    <color name="tv_status_empty_text">#FFD6DEE3</color>
+    <color name="tv_status_error_text">#FFFFC2B8</color>
 </resources>

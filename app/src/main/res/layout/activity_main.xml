@@ -1,9 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/main_browse_fragment"
+    android:id="@+id/main_activity_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     tools:context=".MainActivity"
     tools:deviceIds="tv"
-    tools:ignore="MergeRootFrame" />
+    tools:ignore="MergeRootFrame">
+
+    <FrameLayout
+        android:id="@+id/main_browse_fragment"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/channel_status_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:accessibilityLiveRegion="polite"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginStart="48dp"
+        android:layout_marginTop="92dp"
+        android:layout_marginEnd="48dp"
+        android:background="@drawable/tv_channel_status_background"
+        android:ellipsize="end"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
+        android:gravity="center"
+        android:maxLines="1"
+        android:maxWidth="640dp"
+        android:minHeight="40dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:textSize="16sp"
+        android:visibility="gone"
+        tools:text="正在加载频道"
+        tools:visibility="visible" />
+</FrameLayout>

@@ -55,7 +55,7 @@ class MainFragment : BrowseSupportFragment() {
     private var focusedPreviewHolder: CardPresenter.CardViewHolder? = null
     private var favoriteKeys: Set<String> = emptySet()
     private var latestGroups: Map<String, List<Movie>> = emptyMap()
-    private var latestStatusMessage: String? = null
+    private var rowsInitialized = false
     private var savedFocusPosition: TvSavedFocusPosition? = null
     private var pendingFocusRestore: TvSavedFocusPosition? = null
     private var pendingFavoriteFocusRestore: TvSavedFocusPosition? = null
@@ -104,7 +104,7 @@ class MainFragment : BrowseSupportFragment() {
         val updatedFavorites = ChannelFavorites.favoriteKeys(requireContext())
         if (updatedFavorites != favoriteKeys) {
             favoriteKeys = updatedFavorites
-            renderRows(latestGroups, latestStatusMessage)
+            renderRows(latestGroups, force = true)
         }
         requestSavedFocusRestore()
     }
@@ -120,6 +120,8 @@ class MainFragment : BrowseSupportFragment() {
         backgroundUpdate = null
         visibleLivePreviewController?.release()
         visibleLivePreviewController = null
+        (activity as? MainActivity)?.showChannelStatus(null)
+        rowsInitialized = false
         tvChannelPreviewController?.release()
         tvChannelPreviewController = null
         focusedPreviewMovie = null
@@ -152,19 +154,9 @@ class MainFragment : BrowseSupportFragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 ChannelRepository.state.collect { state ->
-                    when (state) {
-                        ChannelState.Idle -> renderRows(emptyMap(), getString(R.string.channel_loading))
-                        is ChannelState.Loading -> renderRows(
-                            state.groups,
-                            if (state.groups.isEmpty()) getString(R.string.channel_loading) else null
-                        )
-                        is ChannelState.Content -> renderRows(
-                            state.groups,
-                            if (state.fromSnapshot) getString(R.string.channel_offline_snapshot) else null
-                        )
-                        is ChannelState.Empty -> renderRows(emptyMap(), getString(R.string.channel_empty))
-                        is ChannelState.Error -> renderRows(state.groups, state.message)
-                    }
+                    val status = TvChannelStatusPolicy.presentation(state)
+                    (activity as? MainActivity)?.showChannelStatus(status)
+                    renderRows(state.groups)
                 }
             }
         }
@@ -172,21 +164,27 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun renderRows(
         tvGroups: Map<String, List<Movie>>,
-        statusMessage: String?
+        force: Boolean = false
     ) {
+        val previousGroups = latestGroups
+        val previousFavoriteKeys = favoriteKeys
+        val channels = tvGroups.values.flatten()
+        favoriteKeys = ChannelFavorites.migrateLegacyKeys(requireContext(), channels)
+        val groupsChanged = tvGroups != previousGroups
+        latestGroups = tvGroups
+        if (
+            rowsInitialized &&
+            !force &&
+            !groupsChanged &&
+            favoriteKeys == previousFavoriteKeys
+        ) return
+
         focusRequestToken += 1L
         initialFocusPending = false
         visibleLivePreviewController?.reset()
         tvChannelPreviewController?.stop()
         focusedPreviewMovie = null
         focusedPreviewHolder = null
-        latestGroups = tvGroups
-        latestStatusMessage = statusMessage
-        val channels = tvGroups.values.flatten()
-        val migratedFavorites = ChannelFavorites.migrateLegacyKeys(requireContext(), channels)
-        if (migratedFavorites != favoriteKeys) {
-            favoriteKeys = migratedFavorites
-        }
         val rowsAdapter = ArrayObjectAdapter(TvListRowPresenter(cardMetrics))
         val cardPresenter = CardPresenter(
             previewFrameManager = previewFrameManager,
@@ -248,12 +246,6 @@ class MainFragment : BrowseSupportFragment() {
             rowsAdapter.add(ListRow(HeaderItem(rowsAdapter.size().toLong(), category), listRowAdapter))
         }
 
-        statusMessage?.let { message ->
-            val statusAdapter = ArrayObjectAdapter(StatusPresenter())
-            statusAdapter.add(message)
-            rowsAdapter.add(ListRow(HeaderItem(rowsAdapter.size().toLong(), getString(R.string.channel_status)), statusAdapter))
-        }
-
         val settingsAdapter = ArrayObjectAdapter(GridItemPresenter())
         settingsAdapter.add(getString(R.string.personal_settings))
         rowsAdapter.add(
@@ -263,6 +255,7 @@ class MainFragment : BrowseSupportFragment() {
             )
         )
         adapter = rowsAdapter
+        rowsInitialized = true
         requestInitialFocusIfNeeded()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
             ChannelPreviewPreferences.isEnabled(requireContext())
@@ -396,7 +389,7 @@ class MainFragment : BrowseSupportFragment() {
         pendingFavoriteFocusRestore = savedFocusPosition
         val added = ChannelFavorites.toggle(requireContext(), channel)
         favoriteKeys = ChannelFavorites.favoriteKeys(requireContext())
-        renderRows(latestGroups, latestStatusMessage)
+        renderRows(latestGroups, force = true)
         Toast.makeText(
             requireContext(),
             if (added) R.string.favorite_added else R.string.favorite_removed,
@@ -563,29 +556,9 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
-    private inner class StatusPresenter : Presenter() {
-        override fun onCreateViewHolder(parent: ViewGroup): Presenter.ViewHolder {
-            val view = TextView(parent.context).apply {
-                layoutParams = ViewGroup.LayoutParams(STATUS_ITEM_WIDTH, STATUS_ITEM_HEIGHT)
-                setTextColor(Color.LTGRAY)
-                gravity = Gravity.CENTER_VERTICAL
-                isFocusable = false
-            }
-            return Presenter.ViewHolder(view)
-        }
-
-        override fun onBindViewHolder(viewHolder: Presenter.ViewHolder, item: Any?) {
-            (viewHolder.view as TextView).text = item as? String
-        }
-
-        override fun onUnbindViewHolder(viewHolder: Presenter.ViewHolder) = Unit
-    }
-
     companion object {
         private const val BACKGROUND_UPDATE_DELAY_MS = 300L
         private const val GRID_ITEM_WIDTH = 320
         private const val GRID_ITEM_HEIGHT = 120
-        private const val STATUS_ITEM_WIDTH = 720
-        private const val STATUS_ITEM_HEIGHT = 72
     }
 }

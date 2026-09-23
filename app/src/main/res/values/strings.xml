@@ -25,8 +25,13 @@
     <string name="search_results">搜索结果 (%d)</string>
     <string name="channel_loading">正在加载频道…</string>
     <string name="channel_empty">当前节目源没有可播放频道</string>
-    <string name="channel_offline_snapshot">网络不可用，正在显示上次成功加载的频道</string>
-    <string name="channel_status">状态</string>
+    <string name="tv_status_loading">正在加载频道</string>
+    <string name="tv_status_refreshing">正在更新频道</string>
+    <string name="tv_status_cached">离线使用缓存频道</string>
+    <string name="tv_status_empty_cached">缓存中没有可用频道</string>
+    <string name="tv_status_empty">暂无可播放频道</string>
+    <string name="tv_status_error_with_channels">更新失败，继续浏览已有频道</string>
+    <string name="tv_status_error">加载失败，请检查网络或节目源</string>
     <string name="settings_header">设置</string>
 
     <!-- Source settings -->
