@@ -131,7 +131,7 @@ class CardPresenter(
         holder.setCardFocusChangedListener { hasFocus ->
             onCardFocusChanged?.invoke(movie, holder, hasFocus)
         }
-        
+
         val requestKey = "${movie.id}:${movie.videoUrl.orEmpty()}"
         holder.bindCard(requestKey)
         holder.refreshFocusVisual(animate = false)
