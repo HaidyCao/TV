@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Choreographer
 import android.view.View
 import android.view.ViewTreeObserver
 import android.widget.Toast
@@ -38,11 +39,16 @@ class MainFragment : BrowseSupportFragment() {
 
     private val backgroundHandler = Handler(Looper.getMainLooper())
     private var backgroundUpdate: Runnable? = null
+    private val backgroundUpdateGate = BackgroundUpdateGate()
+    private var pendingBackgroundTarget: CustomTarget<Drawable>? = null
+    private var displayedBackgroundTarget: CustomTarget<Drawable>? = null
+    private val viewportScrollFrameGate = ViewportScrollFrameGate()
+    private var viewportScrollFrameCallback: Choreographer.FrameCallback? = null
+    private var viewportScrollFrameGeneration = 0L
     private lateinit var backgroundManager: BackgroundManager
     private var defaultBackground: Drawable? = null
     private lateinit var metrics: DisplayMetrics
     private lateinit var cardMetrics: TvCardMetrics
-    private var backgroundUri: String? = null
     private var previewFrameManager: PreviewFrameManager? = null
     private var livePreviewFrameStore: LivePreviewFrameStore? = null
     private var tvChannelPreviewController: TvChannelPreviewController? = null
@@ -66,6 +72,7 @@ class MainFragment : BrowseSupportFragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        resetViewportScrollFrameGate()
         initialFocusPending = false
         initialFocusApplied = false
         pendingFocusRestore = savedFocusPosition
@@ -146,6 +153,7 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     override fun onPause() {
+        resetViewportScrollFrameGate()
         visibleLivePreviewController?.pause()
         visibleLivePreviewController?.setFocusPriorityPending(false)
         tvChannelPreviewController?.stop()
@@ -153,8 +161,14 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     override fun onDestroyView() {
+        backgroundUpdateGate.reset()
         backgroundUpdate?.let(backgroundHandler::removeCallbacks)
         backgroundUpdate = null
+        if (this::backgroundManager.isInitialized) {
+            backgroundManager.drawable = defaultBackground
+        }
+        clearBackgroundTargets()
+        resetViewportScrollFrameGate()
         visibleLivePreviewController?.release()
         visibleLivePreviewController = null
         (activity as? MainActivity)?.showChannelStatus(null)
@@ -304,7 +318,7 @@ class MainFragment : BrowseSupportFragment() {
             },
             cardMetrics = cardMetrics,
             previewMode = appliedPreviewMode,
-            onCardScrolled = { visibleLivePreviewController?.onViewportScrolled() }
+            onCardScrolled = ::onCardViewportScrolled
         )
 
         val favorites = FavoriteChannelResolver.resolve(tvGroups.values.flatten(), favoriteKeys)
@@ -608,8 +622,7 @@ class MainFragment : BrowseSupportFragment() {
         ) {
             if (item is Movie) {
                 rememberFocusPosition(item, row)
-                backgroundUri = item.backgroundImageUrl
-                scheduleBackgroundUpdate()
+                selectBackgroundUri(item.backgroundImageUrl)
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                     TvChannelPreviewModePolicy.allowsStaticCapture(appliedPreviewMode)
                 ) {
@@ -646,28 +659,100 @@ class MainFragment : BrowseSupportFragment() {
         )
     }
 
-    private fun scheduleBackgroundUpdate() {
-        backgroundUpdate?.let(backgroundHandler::removeCallbacks)
-        backgroundUpdate = Runnable { updateBackground(backgroundUri) }
-        backgroundHandler.postDelayed(backgroundUpdate!!, BACKGROUND_UPDATE_DELAY_MS)
+    private fun onCardViewportScrolled() {
+        if (view == null || !viewportScrollFrameGate.tryDispatch()) return
+
+        // The leading notification must stop an in-flight static capture in
+        // this scroll callback. Further cards in the same frame are coalesced.
+        visibleLivePreviewController?.onViewportScrolled()
+
+        val generation = ++viewportScrollFrameGeneration
+        val callback = Choreographer.FrameCallback {
+            if (generation != viewportScrollFrameGeneration) return@FrameCallback
+            viewportScrollFrameCallback = null
+            viewportScrollFrameGate.onNextFrame()
+        }
+        viewportScrollFrameCallback = callback
+        Choreographer.getInstance().postFrameCallback(callback)
     }
 
-    private fun updateBackground(uri: String?) {
-        if (uri.isNullOrBlank()) {
+    private fun resetViewportScrollFrameGate() {
+        viewportScrollFrameGeneration += 1L
+        viewportScrollFrameCallback?.let { callback ->
+            Choreographer.getInstance().removeFrameCallback(callback)
+        }
+        viewportScrollFrameCallback = null
+        viewportScrollFrameGate.reset()
+    }
+
+    private fun selectBackgroundUri(uri: String?) {
+        if (view == null) return
+        val request = backgroundUpdateGate.select(uri) ?: return
+        backgroundUpdate?.let(backgroundHandler::removeCallbacks)
+        backgroundUpdate = null
+        clearPendingBackgroundTarget()
+
+        val update = Runnable {
+            if (!backgroundUpdateGate.isCurrent(request)) return@Runnable
+            backgroundUpdate = null
+            if (view != null) updateBackground(request)
+        }
+        backgroundUpdate = update
+        backgroundHandler.postDelayed(update, BACKGROUND_UPDATE_DELAY_MS)
+    }
+
+    private fun updateBackground(request: BackgroundUpdateRequest) {
+        if (!backgroundUpdateGate.isCurrent(request)) return
+        val uri = request.uri
+        if (uri == null) {
             backgroundManager.drawable = defaultBackground
+            clearDisplayedBackgroundTarget()
             return
         }
+
+        val target = object : CustomTarget<Drawable>(metrics.widthPixels, metrics.heightPixels) {
+                override fun onResourceReady(resource: Drawable, transition: Transition<in Drawable>?) {
+                    if (!backgroundUpdateGate.isCurrent(request) || view == null) return
+
+                    val oldTarget = displayedBackgroundTarget
+                    backgroundManager.drawable = resource
+                    displayedBackgroundTarget = this
+                    if (pendingBackgroundTarget === this) pendingBackgroundTarget = null
+                    if (oldTarget != null && oldTarget !== this) {
+                        Glide.with(this@MainFragment).clear(oldTarget)
+                    }
+                }
+
+                override fun onLoadCleared(placeholder: Drawable?) {
+                    if (pendingBackgroundTarget === this) pendingBackgroundTarget = null
+                    if (displayedBackgroundTarget === this) displayedBackgroundTarget = null
+                }
+            }
+        pendingBackgroundTarget = target
         Glide.with(this)
             .load(uri)
             .centerCrop()
             .error(defaultBackground)
-            .into(object : CustomTarget<Drawable>(metrics.widthPixels, metrics.heightPixels) {
-                override fun onResourceReady(resource: Drawable, transition: Transition<in Drawable>?) {
-                    backgroundManager.drawable = resource
-                }
+            .into(target)
+    }
 
-                override fun onLoadCleared(placeholder: Drawable?) = Unit
-            })
+    private fun clearPendingBackgroundTarget() {
+        val target = pendingBackgroundTarget ?: return
+        pendingBackgroundTarget = null
+        Glide.with(this).clear(target)
+    }
+
+    private fun clearDisplayedBackgroundTarget() {
+        val target = displayedBackgroundTarget ?: return
+        displayedBackgroundTarget = null
+        Glide.with(this).clear(target)
+    }
+
+    private fun clearBackgroundTargets() {
+        val targets = listOfNotNull(pendingBackgroundTarget, displayedBackgroundTarget).distinct()
+        pendingBackgroundTarget = null
+        displayedBackgroundTarget = null
+        targets.forEach { target -> Glide.with(this).clear(target) }
     }
 
     private class TvListRowPresenter(

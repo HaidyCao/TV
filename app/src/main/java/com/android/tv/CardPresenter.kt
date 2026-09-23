@@ -284,6 +284,7 @@ class CardPresenter(
         private var cardVisibilityChangedListener: ((Boolean) -> Unit)? = null
         private var cardScrollChangedListener: (() -> Unit)? = null
         private var previewFrameShown = false
+        private val visibilityChangeGate = VisibilityChangeGate()
         private val visibilityObserver = ViewTreeObserver.OnGlobalLayoutListener {
             dispatchVisibilityChanged()
         }
@@ -340,7 +341,8 @@ class CardPresenter(
 
         fun setCardVisibilityChangedListener(listener: ((Boolean) -> Unit)?) {
             cardVisibilityChangedListener = listener
-            listener?.invoke(isActuallyVisible())
+            visibilityChangeGate.reset()
+            dispatchVisibilityChanged()
         }
 
         fun setCardScrollChangedListener(listener: (() -> Unit)?) {
@@ -354,8 +356,10 @@ class CardPresenter(
                 visibleRect.width() > 0 && visibleRect.height() > 0
         }
 
-        private fun dispatchVisibilityChanged() {
-            cardVisibilityChangedListener?.invoke(isActuallyVisible())
+        private fun dispatchVisibilityChanged(isVisible: Boolean = isActuallyVisible()) {
+            val listener = cardVisibilityChangedListener ?: return
+            if (!visibilityChangeGate.shouldDispatch(isVisible)) return
+            listener(isVisible)
         }
 
         override fun onAttachedToWindow() {
@@ -371,8 +375,7 @@ class CardPresenter(
                 viewTreeObserver.removeOnScrollChangedListener(scrollObserver)
             }
             cancelPreviewCoverAnimationAtCurrentState()
-            cardScrollChangedListener = null
-            cardVisibilityChangedListener?.invoke(false)
+            dispatchVisibilityChanged(isVisible = false)
             super.onDetachedFromWindow()
         }
 
