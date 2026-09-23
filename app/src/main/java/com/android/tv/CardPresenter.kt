@@ -370,6 +370,7 @@ class CardPresenter(
                 viewTreeObserver.removeOnGlobalLayoutListener(visibilityObserver)
                 viewTreeObserver.removeOnScrollChangedListener(scrollObserver)
             }
+            cancelPreviewCoverAnimationAtCurrentState()
             cardScrollChangedListener = null
             cardVisibilityChangedListener?.invoke(false)
             super.onDetachedFromWindow()
@@ -409,13 +410,13 @@ class CardPresenter(
                     paddingTop + cardMetrics.imageHeightPx
                 )
             }
-            if (!previewFrameShown) {
-                mainImageView?.alpha = if (previewTextureView?.visibility == View.VISIBLE) {
-                    PREVIEW_COVER_ALPHA
-                } else {
-                    1f
+            mainImageView?.let { cover ->
+                if (!previewFrameShown) {
+                    cover.alpha = previewCoverAlpha()
                 }
-                mainImageView?.bringToFront()
+                // Keep the cover above the live surface throughout the reveal.
+                // Alpha alone controls how much of a real frame is visible.
+                cover.bringToFront()
             }
             dispatchVisibilityChanged()
         }
@@ -424,11 +425,12 @@ class CardPresenter(
             previewTextureView?.let { textureView ->
                 textureView.visibility = View.VISIBLE
                 textureView.alpha = 1f
-                if (previewFrameShown) {
-                    textureView.bringToFront()
-                } else {
-                    mainImageView?.alpha = PREVIEW_COVER_ALPHA
-                    mainImageView?.bringToFront()
+                mainImageView?.let { cover ->
+                    if (!previewFrameShown) {
+                        cover.alpha = PREVIEW_COVER_ALPHA
+                    }
+                    cover.visibility = View.VISIBLE
+                    cover.bringToFront()
                 }
                 return textureView
             }
@@ -446,26 +448,42 @@ class CardPresenter(
                 previewTextureView = textureView
                 // Keep the surface alive and renderable, but cover it until
                 // the player confirms that a real frame has arrived.
-                mainImageView?.alpha = PREVIEW_COVER_ALPHA
-                mainImageView?.bringToFront()
+                mainImageView?.let { cover ->
+                    cover.alpha = PREVIEW_COVER_ALPHA
+                    cover.visibility = View.VISIBLE
+                    cover.bringToFront()
+                }
             }
         }
 
         fun showPreviewFrame() {
-            previewFrameShown = true
-            previewTextureView?.let { textureView ->
-                textureView.visibility = View.VISIBLE
-                textureView.alpha = 1f
-                textureView.bringToFront()
+            val textureView = previewTextureView ?: return
+            if (previewFrameShown) {
+                finishPreviewReveal()
+                return
             }
+
+            previewFrameShown = true
+            textureView.visibility = View.VISIBLE
+            textureView.alpha = 1f
             // Keep the main image in the card's layout so Leanback does not
-            // move the title area up when the artwork is replaced.
-            mainImageView?.alpha = 0f
-            mainImageView?.visibility = View.VISIBLE
+            // move the title area up when the artwork is replaced. The
+            // TextureView stays beneath it so the real first frame fades in
+            // through the cover instead of replacing it in one frame.
+            mainImageView?.let { cover ->
+                cover.visibility = View.VISIBLE
+                cover.bringToFront()
+                cover.animate()
+                    .alpha(0f)
+                    .setDuration(PREVIEW_COVER_FADE_DURATION_MS)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            }
         }
 
         fun hidePreviewFrame() {
             previewFrameShown = false
+            mainImageView?.animate()?.cancel()
             previewTextureView?.let { textureView ->
                 textureView.alpha = 1f
                 textureView.visibility = View.GONE
@@ -485,11 +503,33 @@ class CardPresenter(
 
         fun resetPreviewLayer() {
             previewFrameShown = false
+            mainImageView?.animate()?.cancel()
             previewTextureView?.let(::removeView)
             previewTextureView = null
             mainImageView?.alpha = 1f
             mainImageView?.visibility = View.VISIBLE
             mainImageView?.bringToFront()
+        }
+
+        private fun previewCoverAlpha(): Float =
+            if (previewTextureView?.visibility == View.VISIBLE) PREVIEW_COVER_ALPHA else 1f
+
+        private fun cancelPreviewCoverAnimationAtCurrentState() {
+            mainImageView?.let { cover ->
+                cover.animate().cancel()
+                cover.alpha = if (previewFrameShown) 0f else previewCoverAlpha()
+                cover.visibility = View.VISIBLE
+                cover.bringToFront()
+            }
+        }
+
+        private fun finishPreviewReveal() {
+            mainImageView?.let { cover ->
+                cover.animate().cancel()
+                cover.alpha = 0f
+                cover.visibility = View.VISIBLE
+                cover.bringToFront()
+            }
         }
     }
 
@@ -507,6 +547,7 @@ class CardPresenter(
         private const val FOCUS_ANIMATION_DURATION_MS = 140L
         private const val CARD_ELEVATION_DP = 2f
         private const val FOCUS_ELEVATION_DP = 10f
+        private const val PREVIEW_COVER_FADE_DURATION_MS = 150L
         // A nearly opaque cover keeps the TextureView in Honor's composition
         // path while leaving the user-visible card image effectively unchanged.
         private const val PREVIEW_COVER_ALPHA = 0.99f
