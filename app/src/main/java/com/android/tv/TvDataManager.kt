@@ -1,6 +1,7 @@
 package com.android.tv
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +40,23 @@ data class TvCachedSourceInfo(
     val updatedAtMillis: Long
 )
 
+data class TvAvailableSourceInfo(
+    val sourceUrl: String,
+    val channelCount: Int,
+    val groupCount: Int,
+    val updatedAtMillis: Long
+)
+
+internal data class TvPreparedSource(
+    val snapshot: TvSourceSnapshot,
+    val groups: Map<String, List<Movie>>
+)
+
+data class TvSourceActivationResult(
+    val fetchResult: TvChannelFetchResult,
+    val previousSource: TvAvailableSourceInfo?
+)
+
 object TvDataManager {
     const val DEFAULT_TV_LIST_URL = "https://raw.githubusercontent.com/HaidyCao/configs/refs/heads/main/tvlist.txt"
 
@@ -47,6 +65,9 @@ object TvDataManager {
     private const val KEY_CACHED_SOURCE_URL = "cached_tv_source_url"
     private const val KEY_CACHED_PLAYLIST = "cached_tv_playlist"
     private const val KEY_CACHED_AT = "cached_tv_playlist_at"
+    private const val KEY_PREVIOUS_SOURCE_URL = "previous_tv_source_url"
+    private const val KEY_PREVIOUS_PLAYLIST = "previous_cached_tv_playlist"
+    private const val KEY_PREVIOUS_AT = "previous_cached_tv_playlist_at"
     private const val MAX_PLAYLIST_CHARS = 512 * 1024
     private const val HTTP_CACHE_BYTES = 5L * 1024L * 1024L
     private const val DEFAULT_GROUP = "其他频道"
@@ -58,6 +79,11 @@ object TvDataManager {
     @Volatile
     private var httpClient: OkHttpClient? = null
     private val fetchGate = RefreshRequestGate()
+    /** Serializes source preference changes with playlist snapshot writes. */
+    private val sourceStateLock = Any()
+    private var sourceGeneration = 0L
+
+    private data class RawSourcePreferences(val values: Map<String, Any?>)
 
     fun getSourceUrl(context: Context): String {
         return context.applicationContext
@@ -68,14 +94,8 @@ object TvDataManager {
             .ifBlank { DEFAULT_TV_LIST_URL }
     }
 
-    fun saveSourceUrl(context: Context, sourceUrl: String) {
-        fetchGate.begin()
-        context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_SOURCE_URL, sourceUrl.trim())
-            .apply()
-    }
+    /** Captured when a repository refresh is requested to reject jobs delayed across a switch. */
+    internal fun currentSourceGeneration(): Long = synchronized(sourceStateLock) { sourceGeneration }
 
     fun isValidSourceUrl(sourceUrl: String): Boolean {
         val uri = runCatching { Uri.parse(sourceUrl.trim()) }.getOrNull() ?: return false
@@ -90,6 +110,18 @@ object TvDataManager {
         context: Context,
         candidateUrl: String
     ): TvSourceCheckResult {
+        val prepared = prepareSource(context, candidateUrl)
+        return TvSourceCheckResult(
+            channelCount = prepared.snapshot.channelCount,
+            groupCount = prepared.snapshot.groupCount
+        )
+    }
+
+    /** Downloads and parses a candidate without changing the selected source or its snapshots. */
+    internal suspend fun prepareSource(
+        context: Context,
+        candidateUrl: String
+    ): TvPreparedSource {
         val sourceUrl = candidateUrl.trim()
         require(isValidSourceUrl(sourceUrl)) { "节目源地址必须是有效的 HTTP 或 HTTPS URL" }
         return withContext(Dispatchers.IO) {
@@ -106,55 +138,242 @@ object TvDataManager {
             if (playableGroups.isEmpty()) {
                 throw IOException("节目单为空或没有可播放频道")
             }
-            TvSourceCheckResult(
+            val now = System.currentTimeMillis()
+            val snapshot = TvSourceSnapshot(
+                sourceUrl = sourceUrl,
+                playlist = content,
+                updatedAtMillis = now,
                 channelCount = playableGroups.values.sumOf { channels ->
                     channels.count { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
                 },
                 groupCount = playableGroups.size
             )
+            TvPreparedSource(snapshot, groups)
         }
     }
 
     /** Reads only the usable snapshot belonging to the currently saved source. */
     suspend fun readCachedSourceInfo(context: Context): TvCachedSourceInfo? {
         return withContext(Dispatchers.IO) {
-            val appContext = context.applicationContext
-            val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val currentSource = getSourceUrl(appContext)
-            val cachedSource = prefs.getString(KEY_CACHED_SOURCE_URL, null)
-            val cachedPlaylist = prefs.getString(KEY_CACHED_PLAYLIST, null)
-            val updatedAtMillis = prefs.getLong(KEY_CACHED_AT, 0L)
-            if (cachedSource != currentSource || cachedPlaylist.isNullOrBlank() || updatedAtMillis <= 0L) {
-                return@withContext null
+            readStoredSourceState(context.applicationContext).activeSnapshot?.toCachedInfo()
+        }
+    }
+
+    /** Returns only a previous source with a parsed, playable local snapshot. */
+    suspend fun readPreviousSourceInfo(context: Context): TvAvailableSourceInfo? {
+        return withContext(Dispatchers.IO) {
+            val state = readStoredSourceState(context.applicationContext)
+            TvSourceSwitchPolicy.previousSnapshot(state)?.toAvailableInfo()
+        }
+    }
+
+    /** Persists an already fetched and validated candidate as the new current source. */
+    internal fun activatePreparedSource(
+        context: Context,
+        prepared: TvPreparedSource
+    ): TvSourceActivationResult {
+        if (!TvSourceSwitchPolicy.isUsable(prepared.snapshot)) {
+            throw IOException("候选节目单没有可用的直播频道")
+        }
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return synchronized(sourceStateLock) {
+            // Invalidate both old fetches before reading their final cache state.
+            fetchGate.begin()
+            sourceGeneration += 1L
+            val oldValues = captureSourcePreferences(prefs)
+            val current = readStoredSourceState(appContext)
+            val next = TvSourceSwitchPolicy.activate(current, prepared.snapshot)
+            if (next.activeSnapshot != prepared.snapshot) {
+                throw IOException("候选节目单无法激活")
             }
 
-            val groups = runCatching { parsePlaylist(cachedPlaylist) }.getOrNull() ?: return@withContext null
-            if (!PlaylistSnapshotPolicy.shouldUseSnapshot(currentSource, cachedSource, groups)) {
-                return@withContext null
+            val editor = prefs.edit().putString(KEY_SOURCE_URL, next.activeSourceUrl)
+            putSnapshot(editor, KEY_CACHED_SOURCE_URL, KEY_CACHED_PLAYLIST, KEY_CACHED_AT, next.activeSnapshot)
+            putSnapshot(
+                editor,
+                KEY_PREVIOUS_SOURCE_URL,
+                KEY_PREVIOUS_PLAYLIST,
+                KEY_PREVIOUS_AT,
+                next.previousSnapshot
+            )
+            if (!editor.commit()) {
+                restoreSourcePreferences(prefs, oldValues)
+                throw IOException("无法保存节目源设置")
             }
-            val playableGroups = groups.filterValues { channels ->
-                channels.any { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
-            }
-            TvCachedSourceInfo(
-                channelCount = playableGroups.values.sumOf { channels ->
-                    channels.count { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
-                },
-                groupCount = playableGroups.size,
-                updatedAtMillis = updatedAtMillis
+            TvSourceActivationResult(
+                fetchResult = TvChannelFetchResult(
+                    groups = prepared.groups,
+                    sourceUrl = prepared.snapshot.sourceUrl,
+                    fromSnapshot = false,
+                    updatedAtMillis = prepared.snapshot.updatedAtMillis
+                ),
+                previousSource = next.previousSnapshot?.toAvailableInfo()
             )
         }
     }
 
+    /** Activates a valid stored fallback and swaps the current source into the fallback slot. */
+    internal fun restorePreviousSource(context: Context): TvSourceActivationResult? {
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return synchronized(sourceStateLock) {
+            val current = readStoredSourceState(appContext)
+            val next = TvSourceSwitchPolicy.restore(current) ?: return@synchronized null
+            val activeSnapshot = next.activeSnapshot ?: return@synchronized null
+            val groups = parsePlaylist(activeSnapshot.playlist)
+            if (!PlaylistSnapshotPolicy.containsPlayableChannel(groups)) return@synchronized null
+
+            fetchGate.begin()
+            sourceGeneration += 1L
+            val oldValues = captureSourcePreferences(prefs)
+            val editor = prefs.edit().putString(KEY_SOURCE_URL, next.activeSourceUrl)
+            putSnapshot(editor, KEY_CACHED_SOURCE_URL, KEY_CACHED_PLAYLIST, KEY_CACHED_AT, activeSnapshot)
+            putSnapshot(
+                editor,
+                KEY_PREVIOUS_SOURCE_URL,
+                KEY_PREVIOUS_PLAYLIST,
+                KEY_PREVIOUS_AT,
+                next.previousSnapshot
+            )
+            if (!editor.commit()) {
+                restoreSourcePreferences(prefs, oldValues)
+                throw IOException("无法恢复上一个节目源")
+            }
+            TvSourceActivationResult(
+                fetchResult = TvChannelFetchResult(
+                    groups = groups,
+                    sourceUrl = activeSnapshot.sourceUrl,
+                    fromSnapshot = true,
+                    updatedAtMillis = activeSnapshot.updatedAtMillis
+                ),
+                previousSource = next.previousSnapshot?.toAvailableInfo()
+            )
+        }
+    }
+
+    private fun readStoredSourceState(context: Context): TvSourceStoredState = synchronized(sourceStateLock) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val activeSourceUrl = getSourceUrl(context)
+        val legacySnapshot = readSnapshot(
+            prefs,
+            KEY_CACHED_SOURCE_URL,
+            KEY_CACHED_PLAYLIST,
+            KEY_CACHED_AT
+        )
+        val previousSnapshot = readSnapshot(
+            prefs,
+            KEY_PREVIOUS_SOURCE_URL,
+            KEY_PREVIOUS_PLAYLIST,
+            KEY_PREVIOUS_AT
+        )?.takeIf { it.sourceUrl != activeSourceUrl }
+        TvSourceStateMigrationPolicy.fromLegacy(activeSourceUrl, legacySnapshot)
+            .copy(previousSnapshot = previousSnapshot)
+    }
+
+    private fun readSnapshot(
+        prefs: SharedPreferences,
+        sourceKey: String,
+        playlistKey: String,
+        timestampKey: String
+    ): TvSourceSnapshot? {
+        val sourceUrl = prefs.getString(sourceKey, null) ?: return null
+        val playlist = prefs.getString(playlistKey, null) ?: return null
+        val updatedAtMillis = prefs.getLong(timestampKey, 0L)
+        if (!isValidSourceUrl(sourceUrl) || updatedAtMillis <= 0L || playlist.isBlank()) return null
+
+        val groups = runCatching { parsePlaylist(playlist) }.getOrNull() ?: return null
+        val playableGroups = groups.filterValues { channels ->
+            channels.any { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+        }
+        if (playableGroups.isEmpty()) return null
+        val snapshot = TvSourceSnapshot(
+            sourceUrl = sourceUrl,
+            playlist = playlist,
+            updatedAtMillis = updatedAtMillis,
+            channelCount = playableGroups.values.sumOf { channels ->
+                channels.count { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+            },
+            groupCount = playableGroups.size
+        )
+        return snapshot.takeIf(TvSourceSwitchPolicy::isUsable)
+    }
+
+    private fun putSnapshot(
+        editor: SharedPreferences.Editor,
+        sourceKey: String,
+        playlistKey: String,
+        timestampKey: String,
+        snapshot: TvSourceSnapshot?
+    ) {
+        if (snapshot == null) {
+            editor.remove(sourceKey).remove(playlistKey).remove(timestampKey)
+        } else {
+            editor.putString(sourceKey, snapshot.sourceUrl)
+                .putString(playlistKey, snapshot.playlist)
+                .putLong(timestampKey, snapshot.updatedAtMillis)
+        }
+    }
+
+    private fun captureSourcePreferences(prefs: SharedPreferences): RawSourcePreferences {
+        return RawSourcePreferences(
+            listOf(
+                KEY_SOURCE_URL,
+                KEY_CACHED_SOURCE_URL,
+                KEY_CACHED_PLAYLIST,
+                KEY_CACHED_AT,
+                KEY_PREVIOUS_SOURCE_URL,
+                KEY_PREVIOUS_PLAYLIST,
+                KEY_PREVIOUS_AT
+            ).associateWith { key -> if (prefs.contains(key)) prefs.all[key] else null }
+        )
+    }
+
+    private fun restoreSourcePreferences(
+        prefs: SharedPreferences,
+        oldValues: RawSourcePreferences
+    ) {
+        val editor = prefs.edit()
+        oldValues.values.forEach { (key, value) ->
+            when (value) {
+                is String -> editor.putString(key, value)
+                is Long -> editor.putLong(key, value)
+                null -> editor.remove(key)
+            }
+        }
+        editor.commit()
+    }
+
+    private fun TvSourceSnapshot.toCachedInfo() = TvCachedSourceInfo(
+        channelCount = channelCount,
+        groupCount = groupCount,
+        updatedAtMillis = updatedAtMillis
+    )
+
+    private fun TvSourceSnapshot.toAvailableInfo() = TvAvailableSourceInfo(
+        sourceUrl = sourceUrl,
+        channelCount = channelCount,
+        groupCount = groupCount,
+        updatedAtMillis = updatedAtMillis
+    )
+
     suspend fun fetchTvChannels(
         context: Context,
-        forceNetwork: Boolean = false
+        forceNetwork: Boolean = false,
+        expectedSourceGeneration: Long? = null
     ): TvChannelFetchResult {
-        val requestId = fetchGate.begin()
         return withContext(Dispatchers.IO) {
             val appContext = context.applicationContext
             val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val sourceUrl = getSourceUrl(appContext)
-            require(isValidSourceUrl(sourceUrl)) { "节目源地址必须是有效的 HTTP 或 HTTPS URL" }
+            val (requestId, sourceUrl) = synchronized(sourceStateLock) {
+                if (expectedSourceGeneration != null && expectedSourceGeneration != sourceGeneration) {
+                    throw CancellationException("节目源已切换，忽略旧刷新请求")
+                }
+                val id = fetchGate.begin()
+                val currentUrl = getSourceUrl(appContext)
+                require(isValidSourceUrl(currentUrl)) { "节目源地址必须是有效的 HTTP 或 HTTPS URL" }
+                id to currentUrl
+            }
 
             try {
                 ensureCurrentFetch(requestId)
@@ -172,12 +391,18 @@ object TvDataManager {
                 }
                 ensureCurrentFetch(requestId)
                 val now = System.currentTimeMillis()
-                val snapshotWritten = fetchGate.runIfCurrent(requestId) {
-                    prefs.edit()
-                        .putString(KEY_CACHED_SOURCE_URL, sourceUrl)
-                        .putString(KEY_CACHED_PLAYLIST, content)
-                        .putLong(KEY_CACHED_AT, now)
-                        .apply()
+                val snapshotWritten = synchronized(sourceStateLock) {
+                    if (getSourceUrl(appContext) != sourceUrl) {
+                        false
+                    } else {
+                        fetchGate.runIfCurrent(requestId) {
+                            prefs.edit()
+                                .putString(KEY_CACHED_SOURCE_URL, sourceUrl)
+                                .putString(KEY_CACHED_PLAYLIST, content)
+                                .putLong(KEY_CACHED_AT, now)
+                                .apply()
+                        }
+                    }
                 }
                 if (!snapshotWritten) throw CancellationException("旧节目单请求已淘汰")
 
@@ -186,8 +411,13 @@ object TvDataManager {
                 throw error
             } catch (error: Exception) {
                 ensureCurrentFetch(requestId)
-                val snapshot = prefs.getString(KEY_CACHED_PLAYLIST, null)
-                val cachedSource = prefs.getString(KEY_CACHED_SOURCE_URL, null)
+                val (snapshot, cachedSource, cachedAt) = synchronized(sourceStateLock) {
+                    Triple(
+                        prefs.getString(KEY_CACHED_PLAYLIST, null),
+                        prefs.getString(KEY_CACHED_SOURCE_URL, null),
+                        prefs.getLong(KEY_CACHED_AT, 0L)
+                    )
+                }
                 val snapshotGroups = snapshot
                     ?.takeIf(String::isNotBlank)
                     ?.let { cachedPlaylist -> runCatching { parsePlaylist(cachedPlaylist) }.getOrNull() }
@@ -198,11 +428,17 @@ object TvDataManager {
                     )
                 ) {
                     ensureCurrentFetch(requestId)
+                    val sourceStillCurrent = synchronized(sourceStateLock) {
+                        fetchGate.isCurrent(requestId) && getSourceUrl(appContext) == sourceUrl
+                    }
+                    if (!sourceStillCurrent) {
+                        throw CancellationException("当前节目源已切换")
+                    }
                     TvChannelFetchResult(
                         groups = snapshotGroups,
                         sourceUrl = sourceUrl,
                         fromSnapshot = true,
-                        updatedAtMillis = prefs.getLong(KEY_CACHED_AT, 0L)
+                        updatedAtMillis = cachedAt
                     )
                 } else {
                     throw error

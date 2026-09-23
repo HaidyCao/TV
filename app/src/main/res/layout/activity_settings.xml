@@ -78,6 +78,28 @@
             android:text="@string/save_and_refresh"
             android:textColor="#FFFFFF" />
 
+        <TextView
+            android:id="@+id/source_previous_summary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:textColor="#B8FFFFFF"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btn_restore_source"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="#455A64"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:text="@string/settings_restore_source"
+            android:textColor="#FFFFFF"
+            android:visibility="gone" />
+
         <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/switch_preview_enabled"
             android:layout_width="match_parent"

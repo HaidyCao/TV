@@ -15,7 +15,6 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.view.ContextThemeWrapper
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -35,7 +34,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var editSourceUrl: EditText
     private lateinit var sourceCacheStatus: TextView
     private lateinit var sourceTestStatus: TextView
+    private lateinit var sourcePreviousSummary: TextView
     private lateinit var testSourceButton: Button
+    private lateinit var restoreSourceButton: Button
+    private lateinit var saveSourceButton: Button
     private lateinit var sourceUrlFocusContainer: View
     private lateinit var sourceUrlDisplay: TextView
     private lateinit var previewFocusRow: View
@@ -48,8 +50,13 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var settingsScrollView: ScrollView
     private var isTvUiMode = false
     private var sourceTestJob: Job? = null
+    private var sourceActivationJob: Job? = null
+    private var sourceRestoreJob: Job? = null
     private var sourceTestGeneration = 0L
+    private var sourceSwitchInProgress = false
     private var cachedSourceInfo: TvCachedSourceInfo? = null
+    private var cacheStatusLoadGeneration = 0L
+    private var previousSourceLoadGeneration = 0L
     private var sourceRefreshInProgress = false
     private var cacheInfoReloadInFlightAtMillis: Long? = null
     private var cacheInfoReloadedAtMillis: Long? = null
@@ -63,8 +70,11 @@ class SettingsActivity : AppCompatActivity() {
         editSourceUrl = findViewById(R.id.edit_source_url)
         sourceCacheStatus = findViewById(R.id.source_cache_status)
         sourceTestStatus = findViewById(R.id.source_test_status)
+        sourcePreviousSummary = findViewById(R.id.source_previous_summary)
         testSourceButton = findViewById(R.id.btn_test_source)
-        val btnSave = findViewById<Button>(R.id.btn_save)
+        restoreSourceButton = findViewById(R.id.btn_restore_source)
+        saveSourceButton = findViewById(R.id.btn_save)
+        val btnSave = saveSourceButton
         val previewSwitch = findViewById<SwitchCompat>(R.id.switch_preview_enabled)
 
         editSourceUrl.setText(TvDataManager.getSourceUrl(this))
@@ -85,6 +95,7 @@ class SettingsActivity : AppCompatActivity() {
                 sourceRefreshButton,
                 testSourceButton,
                 btnSave,
+                restoreSourceButton,
                 findViewById(R.id.source_cache_status),
                 settingsAboutText
             ).forEach { focusTarget: View ->
@@ -96,7 +107,7 @@ class SettingsActivity : AppCompatActivity() {
             bindCurrentSource()
             bindAboutSummary()
             sourceRefreshButton.setOnClickListener {
-                if (sourceRefreshInProgress) return@setOnClickListener
+                if (sourceRefreshInProgress || sourceSwitchInProgress) return@setOnClickListener
                 sourceRefreshInProgress = true
                 sourceRuntimeStatus.text = getString(R.string.settings_source_refreshing)
                 ChannelRepository.refresh(applicationContext, force = true)
@@ -132,8 +143,29 @@ class SettingsActivity : AppCompatActivity() {
                     false
                 }
             }
-            testSourceButton.setOnKeyListener(focusPreviewOnDown)
-            btnSave.setOnKeyListener(focusPreviewOnDown)
+            val focusPreviousOrPreviewOnDown = View.OnKeyListener { _, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && event.action == KeyEvent.ACTION_DOWN) {
+                    val target = if (restoreSourceButton.visibility == View.VISIBLE) {
+                        restoreSourceButton
+                    } else {
+                        previewFocusRow
+                    }
+                    if (!target.requestFocus()) {
+                        target.post {
+                            if (!isFinishing && !isDestroyed) target.requestFocus()
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            btnSave.setOnKeyListener(focusPreviousOrPreviewOnDown)
+            testSourceButton.setOnKeyListener(focusPreviousOrPreviewOnDown)
+            restoreSourceButton.setOnKeyListener(focusPreviewOnDown)
+            restoreSourceButton.setOnFocusChangeListener { focused, hasFocus ->
+                if (hasFocus) keepTvFocusAboveBottomEdge(focused)
+            }
             observeTvSourceState()
             ChannelRepository.ensureLoaded(applicationContext)
         }
@@ -153,28 +185,18 @@ class SettingsActivity : AppCompatActivity() {
                 sourceTestGeneration += 1L
                 sourceTestJob?.cancel()
                 sourceTestJob = null
-                testSourceButton.isEnabled = true
+                sourceActivationJob?.cancel()
+                sourceActivationJob = null
                 sourceTestStatus.visibility = View.GONE
             }
         })
 
         testSourceButton.setOnClickListener { testCandidateSource() }
-        btnSave.setOnClickListener {
-            val newUrl = editSourceUrl.text.toString().trim()
-            if (TvDataManager.isValidSourceUrl(newUrl)) {
-                sourceTestGeneration += 1L
-                sourceTestJob?.cancel()
-                TvDataManager.saveSourceUrl(this, newUrl)
-                ChannelRepository.invalidate()
-                ChannelRepository.refresh(applicationContext, force = true)
-                Toast.makeText(this, getString(R.string.source_saved_refreshing), Toast.LENGTH_SHORT).show()
-                finish()
-            } else {
-                Toast.makeText(this, getString(R.string.source_url_invalid), Toast.LENGTH_SHORT).show()
-            }
-        }
+        btnSave.setOnClickListener { activateCandidateSource() }
+        restoreSourceButton.setOnClickListener { restorePreviousSource() }
 
         loadCachedSourceStatus()
+        loadPreviousSourceStatus()
         if (isTvUiMode) {
             window.decorView.post {
                 if (!isFinishing && !isDestroyed) sourceUrlFocusContainer.requestFocus()
@@ -186,21 +208,23 @@ class SettingsActivity : AppCompatActivity() {
         sourceTestGeneration += 1L
         sourceTestJob?.cancel()
         sourceTestJob = null
+        sourceActivationJob?.cancel()
+        sourceActivationJob = null
+        sourceRestoreJob?.cancel()
+        sourceRestoreJob = null
         super.onDestroy()
     }
 
     private fun testCandidateSource() {
+        if (sourceSwitchInProgress || sourceTestJob?.isActive == true) return
         val candidateUrl = editSourceUrl.text.toString().trim()
-        sourceTestJob?.cancel()
         val generation = ++sourceTestGeneration
         if (!TvDataManager.isValidSourceUrl(candidateUrl)) {
-            testSourceButton.isEnabled = true
             sourceTestJob = null
             showTestStatus(getString(R.string.source_url_invalid))
             return
         }
 
-        testSourceButton.isEnabled = false
         showTestStatus(getString(R.string.source_testing))
         sourceTestJob = lifecycleScope.launch {
             try {
@@ -220,10 +244,115 @@ class SettingsActivity : AppCompatActivity() {
                 showTestStatus(getString(errorMessageResId(error)))
             } finally {
                 if (generation == sourceTestGeneration) {
-                    testSourceButton.isEnabled = true
                     sourceTestJob = null
                 }
             }
+        }
+    }
+
+    private fun activateCandidateSource() {
+        if (sourceSwitchInProgress) return
+        val candidateUrl = editSourceUrl.text.toString().trim()
+        if (!TvDataManager.isValidSourceUrl(candidateUrl)) {
+            showTestStatus(getString(R.string.source_url_invalid))
+            return
+        }
+
+        sourceSwitchInProgress = true
+        sourceTestGeneration += 1L
+        val generation = sourceTestGeneration
+        sourceTestJob?.cancel()
+        sourceTestJob = null
+        showTestStatus(getString(R.string.source_activation_loading))
+        sourceActivationJob = lifecycleScope.launch {
+            try {
+                val prepared = TvDataManager.prepareSource(this@SettingsActivity, candidateUrl)
+                if (!isCurrentCandidate(generation, candidateUrl)) return@launch
+
+                ChannelRepository.activatePreparedSource(
+                    applicationContext,
+                    prepared
+                )
+                bindCurrentSource()
+                showTestStatus(
+                    getString(
+                        R.string.source_activation_success,
+                        prepared.snapshot.groupCount,
+                        prepared.snapshot.channelCount
+                    )
+                )
+                // Loading the persisted records also updates cache and fallback details.
+                loadCachedSourceStatus()
+                loadPreviousSourceStatus()
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (error: Exception) {
+                if (generation == sourceTestGeneration) {
+                    val messageResId = if (errorMessageResId(error) == R.string.source_test_empty) {
+                        R.string.source_test_empty
+                    } else {
+                        R.string.source_activation_failed
+                    }
+                    showTestStatus(getString(messageResId))
+                }
+            } finally {
+                sourceActivationJob = null
+                sourceSwitchInProgress = false
+                setSourceEditingEnabled(true)
+            }
+        }
+        setSourceEditingEnabled(false)
+    }
+
+    private fun restorePreviousSource() {
+        if (sourceSwitchInProgress || sourceRestoreJob?.isActive == true) return
+        sourceSwitchInProgress = true
+        sourceTestGeneration += 1L
+        sourceTestJob?.cancel()
+        sourceTestJob = null
+        sourceActivationJob?.cancel()
+        sourceActivationJob = null
+        showTestStatus(getString(R.string.settings_restoring_source))
+        sourceRestoreJob = lifecycleScope.launch {
+            try {
+                val result = ChannelRepository.restorePreviousSource(applicationContext)
+                if (result == null) {
+                    updatePreviousSource(null)
+                    showTestStatus(getString(R.string.settings_no_previous_source))
+                    return@launch
+                }
+
+                val restored = result.fetchResult
+                if (editSourceUrl.text.toString() != restored.sourceUrl) {
+                    editSourceUrl.setText(restored.sourceUrl)
+                }
+                bindCurrentSource()
+                val counts = countPlayableChannels(restored.groups)
+                showTestStatus(
+                    getString(R.string.settings_restore_source_success, counts.second, counts.first)
+                )
+                loadCachedSourceStatus()
+                loadPreviousSourceStatus()
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (_: Exception) {
+                showTestStatus(getString(R.string.settings_restore_source_failed))
+            } finally {
+                sourceRestoreJob = null
+                sourceSwitchInProgress = false
+                setSourceEditingEnabled(true)
+            }
+        }
+        setSourceEditingEnabled(false)
+    }
+
+    private fun setSourceEditingEnabled(enabled: Boolean) {
+        editSourceUrl.isEnabled = enabled
+        if (isTvUiMode) {
+            sourceUrlFocusContainer.isEnabled = enabled
+            sourceUrlFocusContainer.isClickable = enabled
+            sourceUrlFocusContainer.isFocusable = enabled
+            sourceUrlFocusContainer.isFocusableInTouchMode = enabled
         }
     }
 
@@ -323,12 +452,59 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun loadCachedSourceStatus() {
+        val generation = ++cacheStatusLoadGeneration
         lifecycleScope.launch {
             val info = TvDataManager.readCachedSourceInfo(this@SettingsActivity)
+            if (generation != cacheStatusLoadGeneration) return@launch
             cachedSourceInfo = info
             updateCacheStatus(info)
             if (isTvUiMode) renderTvSourceState(ChannelRepository.state.value)
         }
+    }
+
+    private fun loadPreviousSourceStatus() {
+        val generation = ++previousSourceLoadGeneration
+        lifecycleScope.launch {
+            val info = TvDataManager.readPreviousSourceInfo(this@SettingsActivity)
+            if (generation == previousSourceLoadGeneration) updatePreviousSource(info)
+        }
+    }
+
+    private fun updatePreviousSource(info: TvAvailableSourceInfo?) {
+        if (info == null) {
+            sourcePreviousSummary.text = getString(R.string.settings_no_previous_source)
+            sourcePreviousSummary.visibility = View.GONE
+            restoreSourceButton.visibility = View.GONE
+        } else {
+            val host = Uri.parse(info.sourceUrl).host.orEmpty().ifBlank { info.sourceUrl }
+            sourcePreviousSummary.text = getString(
+                R.string.settings_previous_source_summary,
+                host,
+                info.channelCount,
+                formatTimestamp(info.updatedAtMillis),
+                info.sourceUrl
+            )
+            sourcePreviousSummary.visibility = View.VISIBLE
+            restoreSourceButton.visibility = View.VISIBLE
+        }
+
+        if (isTvUiMode) {
+            val next = if (info == null) previewFocusRow else restoreSourceButton
+            testSourceButton.nextFocusDownId = next.id
+            saveSourceButton.nextFocusDownId = next.id
+            restoreSourceButton.nextFocusUpId = saveSourceButton.id
+            previewFocusRow.nextFocusUpId = if (info == null) saveSourceButton.id else restoreSourceButton.id
+        }
+    }
+
+    private fun countPlayableChannels(groups: Map<String, List<Movie>>): Pair<Int, Int> {
+        val playableGroups = groups.filterValues { channels ->
+            channels.any { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+        }
+        val channelCount = playableGroups.values.sumOf { channels ->
+            channels.count { channel -> channel.isLive && !channel.videoUrl.isNullOrBlank() }
+        }
+        return playableGroups.size to channelCount
     }
 
     private fun bindCurrentSource() {
